@@ -372,13 +372,33 @@ func CalculateCanvasSize(frames []gocv.Mat, transforms []*gocv.Mat, refIndex int
 	// Calculate the maximum translation in each direction
 	var minX, maxX, minY, maxY float64
 	for i, transform := range transforms {
-		if i == refIndex {
+		if i == refIndex || transform == nil {
+			continue
+		}
+
+		// Check if matrix is valid
+		if (*transform).Empty() {
+			log.Warn("Empty transformation matrix", "frame", i)
+			continue
+		}
+
+		// Get translation components with error checking
+		if (*transform).Rows() < 2 || (*transform).Cols() < 3 {
+			log.Error("Invalid transformation matrix dimensions",
+				"frame", i,
+				"rows", (*transform).Rows(),
+				"cols", (*transform).Cols())
 			continue
 		}
 
 		// Get translation components
-		tx := transform.GetDoubleAt(0, 2)
-		ty := transform.GetDoubleAt(1, 2)
+		tx := (*transform).GetDoubleAt(0, 2)
+		ty := (*transform).GetDoubleAt(1, 2)
+
+		log.Debug("Frame translation",
+			"frame", i,
+			"tx", tx,
+			"ty", ty)
 
 		// Update bounds
 		minX = math.Min(minX, tx)
@@ -397,7 +417,11 @@ func CalculateCanvasSize(frames []gocv.Mat, transforms []*gocv.Mat, refIndex int
 		"width", canvasWidth,
 		"height", canvasHeight,
 		"x_offset", frameXOffset,
-		"y_offset", frameYOffset)
+		"y_offset", frameYOffset,
+		"min_x", minX,
+		"max_x", maxX,
+		"min_y", minY,
+		"max_y", maxY)
 
 	return canvasWidth, canvasHeight, frameXOffset, frameYOffset
 }
