@@ -195,7 +195,19 @@ func AlignImages(img1, img2 gocv.Mat, calcDirection bool) (*gocv.Mat, string) {
 	defer errMat.Close()
 
 	// compute sparse optical flow (Lucas-Kanade)
-	gocv.CalcOpticalFlowPyrLK(b1, b2, prevPtsMat, nextPtsMat, &status, &errMat)
+	gocv.CalcOpticalFlowPyrLKWithParams(
+		b1,
+		b2,
+		prevPtsMat,
+		nextPtsMat,
+		&status,
+		&errMat,
+		config.LKWinSize,
+		config.LKMaxLevel,
+		config.LKCriteria,
+		config.LKFlags,
+		config.LKMinEigThreshold,
+	)
 
 	// filter valid correspondences
 	var valid1, valid2 []gocv.Point2f
@@ -861,11 +873,20 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 			defer wg.Done()
 			for i := range jobs {
 				transform := transforms[i]
+
+				affine := gocv.NewMatWithSize(2, 3, gocv.MatTypeCV64F)
+				affine.SetDoubleAt(0, 0, transform.GetDoubleAt(0, 0))
+				affine.SetDoubleAt(0, 1, transform.GetDoubleAt(0, 1))
+				affine.SetDoubleAt(0, 2, transform.GetDoubleAt(0, 2))
+				affine.SetDoubleAt(1, 0, transform.GetDoubleAt(1, 0))
+				affine.SetDoubleAt(1, 1, transform.GetDoubleAt(1, 1))
+				affine.SetDoubleAt(1, 2, transform.GetDoubleAt(1, 2))
+
 				warped := gocv.NewMat()
-				gocv.WarpPerspectiveWithParams(
+				gocv.WarpAffineWithParams(
 					frames[i],
 					&warped,
-					*transform,
+					affine,
 					image.Pt(canvasWidth, canvasHeight),
 					gocv.InterpolationLinear,
 					gocv.BorderConstant,
