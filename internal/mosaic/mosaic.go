@@ -3,6 +3,7 @@ package mosaic
 import (
 	"fmt"
 	"image"
+	"image/color"
 	"math"
 	"os"
 	"path/filepath"
@@ -282,8 +283,28 @@ func ExtractFrames(videoPath string) ([]gocv.Mat, error) {
 		frames = append(frames, frame.Clone())
 	}
 
-	log.Info("Extracted frames", "count", len(frames))
 	return frames, nil
+}
+
+// Median returns the median value of the input slice.
+// If the slice is empty, it returns 0.
+func Median(xs []float64) float64 {
+	n := len(xs)
+	if n == 0 {
+		return 0
+	}
+	// Copy so original slice isn’t modified
+	sorted := make([]float64, n)
+	copy(sorted, xs)
+	sort.Float64s(sorted)
+
+	mid := n / 2
+	if n%2 == 0 {
+		// even length: average two middle values
+		return (sorted[mid-1] + sorted[mid]) / 2
+	}
+	// odd length: return the middle value
+	return sorted[mid]
 }
 
 // CalculateTransformations computes cumulative homographies aligning each frame
@@ -306,10 +327,7 @@ func CalculateTransformations(frames []gocv.Mat) ([]*gocv.Mat, int) {
 	yTranslations := make([]float64, 0, n)
 
 	// 3) identity homography for the reference frame
-	id := gocv.NewMatWithSize(3, 3, gocv.MatTypeCV64F)
-	id.SetDoubleAt(0, 0, 1.0)
-	id.SetDoubleAt(1, 1, 1.0)
-	id.SetDoubleAt(2, 2, 1.0)
+	id := gocv.Eye(3, 3, gocv.MatTypeCV64F)
 	transforms[refIdx] = &id
 	yTranslations = append(yTranslations, 0.0)
 
@@ -358,16 +376,7 @@ func CalculateTransformations(frames []gocv.Mat) ([]*gocv.Mat, int) {
 	}
 
 	// 6) compute median of the vertical translations
-	sortedY := make([]float64, len(yTranslations))
-	copy(sortedY, yTranslations)
-	sort.Float64s(sortedY)
-	mid := len(sortedY) / 2
-	var median float64
-	if len(sortedY)%2 == 1 {
-		median = sortedY[mid]
-	} else {
-		median = (sortedY[mid-1] + sortedY[mid]) / 2
-	}
+	median := Median(yTranslations)
 
 	// 7) subtract median from each transform’s ty (element [1,2])
 	for _, Tptr := range transforms {
@@ -635,8 +644,8 @@ func findLeftmostNonBlack(m gocv.Mat) int {
 	return -1
 }
 
-// ImagesToVideo converts a slice of Mats into an MP4 video file.
-func ImagesToVideo(images []gocv.Mat, outputPath string, fps int) error {
+// GenerateVideoFromFrames converts a slice of Mats into an MP4 video file.
+func GenerateVideoFromFrames(images []gocv.Mat, outputPath string, fps int) error {
 	log := logger.WithOperation("create_video")
 	log.Info("Creating video", "output", outputPath, "fps", fps, "frame_count", len(images))
 
@@ -813,7 +822,7 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 		inv := gocv.NewMat()
 		ma := *T
 
-		if ok := gocv.Invert(ma, &inv, gocv.SolveDecompositionSvd); ok <= 0 {
+		if ok := gocv.Invert(ma, &inv, gocv.SolveDecompositionLu); ok <= 0 {
 			// print the matrix `ma``
 
 			//pretty print `ma`
@@ -851,15 +860,17 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 		go func() {
 			defer wg.Done()
 			for i := range jobs {
-				var warped gocv.Mat
-				if i == refIndex {
-					warped = frames[i].Clone()
-				} else {
-					// use the inverted & offset transform here
-					transform := transforms[i]
-					warped = gocv.NewMat()
-					gocv.WarpPerspective(frames[i], &warped, *transform, image.Pt(canvasWidth, canvasHeight))
-				}
+				transform := transforms[i]
+				warped := gocv.NewMat()
+				gocv.WarpPerspectiveWithParams(
+					frames[i],
+					&warped,
+					*transform,
+					image.Pt(canvasWidth, canvasHeight),
+					gocv.InterpolationLinear,
+					gocv.BorderConstant,
+					color.RGBA{0, 0, 0, 0},
+				)
 				results <- resJob{idx: i, mat: warped}
 			}
 		}()
@@ -912,7 +923,7 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 	log.Info("Stitched panorama", "output", outputPath)
 
 	// Save as video
-	if err := ImagesToVideo([]gocv.Mat{mosaic}, outputPath, 30); err != nil {
+	if err := GenerateVideoFromFrames([]gocv.Mat{mosaic}, outputPath, 30); err != nil {
 		return fmt.Errorf("failed to save video: %w", err)
 	}
 
@@ -975,10 +986,10 @@ func GenerateVideos() error {
 		}
 		log.Info("Generated static mosaic")
 
-		if err := GenerateMosaicVideo(videoPath, outputDir, true); err != nil {
-			log.Error("Failed to generate dynamic mosaic", "error", err)
-			continue
-		}
+		// if err := GenerateMosaicVideo(videoPath, outputDir, true); err != nil {
+		// 	log.Error("Failed to generate dynamic mosaic", "error", err)
+		// 	continue
+		// }
 		log.Info("Generated dynamic mosaic")
 	}
 
