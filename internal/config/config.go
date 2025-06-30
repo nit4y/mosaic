@@ -44,9 +44,11 @@ const (
 
 var (
 	// Lucas-Kanade parameters
-	LKWinSize  = image.Pt(15, 15)
-	LKMaxLevel = 2
-	LKCriteria = gocv.NewTermCriteria(gocv.Count|gocv.EPS, 10, 0.03)
+	LKWinSize         = image.Pt(15, 15)
+	LKMaxLevel        = 2
+	LKCriteria        = gocv.NewTermCriteria(gocv.Count|gocv.EPS, 10, 0.03)
+	LKFlags           = 0
+	LKMinEigThreshold = 1e-4
 
 	// Dynamic mosaics video filenames
 	DynamicMosaics = []string{"Trees.mp4", "Iguazu.mp4"}
