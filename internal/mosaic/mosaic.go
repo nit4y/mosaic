@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -285,79 +286,100 @@ func ExtractFrames(videoPath string) ([]gocv.Mat, error) {
 	return frames, nil
 }
 
-// CalculateTransformations computes transformation matrices to align each frame
-// to the reference (middle) frame, and returns the transforms and the ref index.
+// CalculateTransformations computes cumulative homographies aligning each frame
+// to the middle (reference) frame, then recenters them by the median vertical shift.
 func CalculateTransformations(frames []gocv.Mat) ([]*gocv.Mat, int) {
 	log := logger.WithOperation("calculate_transformations")
-	log.Info("Starting transformation calculations", "frame_count", len(frames))
+	n := len(frames)
+	log.Info("Starting transformation calculations", "frame_count", n)
 
-	if len(frames) == 0 {
+	if n == 0 {
 		log.Error("No frames provided for transformation calculation")
 		return nil, -1
 	}
 
-	// Calculate transformations between consecutive frames
-	transforms := make([]*gocv.Mat, len(frames))
-	for i := 0; i < len(frames); i++ {
-		mat := gocv.NewMat()
-		transforms[i] = &mat
-	}
+	// 1) reference index is the middle frame
+	refIdx := n / 2
 
-	// Find the frame with the most stable motion
-	var bestStability float64
-	bestIndex := 0
+	// 2) allocate output slice
+	transforms := make([]*gocv.Mat, n)
+	yTranslations := make([]float64, 0, n)
 
-	for i := 1; i < len(frames); i++ {
-		log := log.With("frame_pair", fmt.Sprintf("%d->%d", i-1, i))
+	// 3) identity homography for the reference frame
+	id := gocv.NewMatWithSize(3, 3, gocv.MatTypeCV64F)
+	id.SetDoubleAt(0, 0, 1.0)
+	id.SetDoubleAt(1, 1, 1.0)
+	id.SetDoubleAt(2, 2, 1.0)
+	transforms[refIdx] = &id
+	yTranslations = append(yTranslations, 0.0)
 
-		// Align current frame to previous frame
-		transform, direction := AlignImages(frames[i-1], frames[i], true)
-		if transform.Empty() {
-			log.Error("Failed to align frames - empty transformation matrix")
+	// 4) accumulate to the right of refIdx
+	accum := id.Clone() // running product
+	for i := refIdx + 1; i < n; i++ {
+		H, _ := AlignImages(frames[i-1], frames[i], true)
+		if H.Empty() {
+			log.Error("Failed to align frames for right side", "i", i)
+			H.Close()
 			continue
 		}
-		log.Info("Aligned frames", "direction", direction)
+		// accum = accum @ H
+		tmp := gocv.NewMat()
+		gocv.Gemm(accum, *H, 1.0, gocv.NewMat(), 0.0, &tmp, 0)
+		accum.Close()
+		H.Close()
+		accum = tmp
 
-		// Store transformation
-		transforms[i] = transform
+		// clone for output
+		cl := accum.Clone()
+		transforms[i] = &cl
+		yTranslations = append(yTranslations, accum.GetDoubleAt(1, 2))
+	}
 
-		// Calculate stability metric (e.g., determinant of the transformation matrix)
-		// Add safety checks for matrix access
-		if transform.Rows() < 2 || transform.Cols() < 2 {
-			log.Error("Invalid transformation matrix dimensions",
-				"rows", transform.Rows(),
-				"cols", transform.Cols())
+	// 5) accumulate to the left of refIdx
+	accum = id.Clone()
+	for i := refIdx - 1; i >= 0; i-- {
+		H, _ := AlignImages(frames[i+1], frames[i], false)
+		if H.Empty() {
+			log.Error("Failed to align frames for left side", "i", i)
+			H.Close()
 			continue
 		}
+		// accum = H @ accum
+		tmp := gocv.NewMat()
+		gocv.Gemm(*H, accum, 1.0, gocv.NewMat(), 0.0, &tmp, 0)
+		accum.Close()
+		H.Close()
+		accum = tmp
 
-		// Get matrix elements with error checking
-		a := transform.GetDoubleAt(0, 0)
-		b := transform.GetDoubleAt(0, 1)
-		c := transform.GetDoubleAt(1, 0)
-		d := transform.GetDoubleAt(1, 1)
+		// insert at transforms[i]
+		cl := accum.Clone()
+		transforms[i] = &cl
+		yTranslations = append([]float64{accum.GetDoubleAt(1, 2)}, yTranslations...)
+	}
 
-		det := a*d - b*c
-		stability := math.Abs(det)
+	// 6) compute median of the vertical translations
+	sortedY := make([]float64, len(yTranslations))
+	copy(sortedY, yTranslations)
+	sort.Float64s(sortedY)
+	mid := len(sortedY) / 2
+	var median float64
+	if len(sortedY)%2 == 1 {
+		median = sortedY[mid]
+	} else {
+		median = (sortedY[mid-1] + sortedY[mid]) / 2
+	}
 
-		log.Info("Transformation stability",
-			"determinant", det,
-			"stability", stability)
-
-		if stability > bestStability {
-			bestStability = stability
-			bestIndex = i
+	// 7) subtract median from each transform’s ty (element [1,2])
+	for _, Tptr := range transforms {
+		if Tptr == nil {
+			continue
 		}
+		ty := Tptr.GetDoubleAt(1, 2) - median
+		Tptr.SetDoubleAt(1, 2, ty)
 	}
 
-	if bestIndex == 0 && len(frames) > 1 {
-		log.Warn("No stable frame found, using first frame as reference")
-		bestIndex = 0
-	}
-
-	log.Info("Found most stable frame",
-		"frame_index", bestIndex,
-		"stability", bestStability)
-	return transforms, bestIndex
+	log.Info("Finished calculating transformations", "ref_index", refIdx)
+	return transforms, refIdx
 }
 
 func CalculateCanvasSize(frames []gocv.Mat, transforms []*gocv.Mat, refIndex int) (int, int, int, int) {
@@ -478,66 +500,139 @@ func TrimBlackBorders(img gocv.Mat, threshold uint8) gocv.Mat {
 	return cropped
 }
 
-// StitchPanorama stitches warped frames into a panorama using pixel column overlap.
-func StitchPanorama(videoName string, warpedFrames []gocv.Mat, canvasWidth, canvasHeight, frameXOffset int) gocv.Mat {
+// clampInt ensures v is between min and max (inclusive).
+func clampInt(v, min, max int) int {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
+
+// StitchPanorama builds a panoramic mosaic by copying only the non-black columns
+// between consecutive warped frames into a larger canvas.
+func StitchPanorama(
+	videoName string,
+	warpedFrames []gocv.Mat,
+	canvasWidth,
+	canvasHeight,
+	frameXOffset int,
+) gocv.Mat {
 	log := logger.WithVideo(videoName)
 	log.Info("Starting panorama stitching",
 		"frame_count", len(warpedFrames),
 		"canvas_width", canvasWidth,
 		"canvas_height", canvasHeight,
-		"x_offset", frameXOffset)
+		"x_offset", frameXOffset,
+	)
 
-	// Create output canvas
+	// 1) Blank canvas
 	canvas := gocv.NewMatWithSize(canvasHeight, canvasWidth, gocv.MatTypeCV8UC3)
 	canvas.SetTo(gocv.NewScalar(0, 0, 0, 0))
 
-	// Create weight matrix for blending
-	weights := gocv.NewMatWithSize(canvasHeight, canvasWidth, gocv.MatTypeCV32F)
-	weights.SetTo(gocv.NewScalar(0, 0, 0, 0))
+	var prevWarped gocv.Mat
+	prevLeft := 0
+	hasPrev := false
 
-	// Process each frame
-	for i, frame := range warpedFrames {
-		log := log.With("frame", i)
+	for idx, warped := range warpedFrames {
+		// 2) find leftmost non-black column
+		currLeft := findLeftmostNonBlack(warped)
+		if currLeft < 0 {
+			continue
+		}
 
-		// Create mask for valid pixels
-		mask := gocv.NewMatWithSize(frame.Rows(), frame.Cols(), gocv.MatTypeCV8U)
-		mask.SetTo(gocv.NewScalar(0, 0, 0, 0))
+		if hasPrev {
+			// clamp coords
+			srcX1 := clampInt(prevLeft+frameXOffset, 0, prevWarped.Cols())
+			srcX2 := clampInt(currLeft+frameXOffset, 0, prevWarped.Cols())
+			dstX1 := clampInt(srcX1, 0, canvas.Cols())
+			dstX2 := clampInt(srcX2, 0, canvas.Cols())
 
-		// Set valid pixels to 1
-		for y := 0; y < frame.Rows(); y++ {
-			for x := 0; x < frame.Cols(); x++ {
-				if frame.GetVecbAt(y, x)[0] != 0 || frame.GetVecbAt(y, x)[1] != 0 || frame.GetVecbAt(y, x)[2] != 0 {
-					mask.SetUCharAt(y, x, 255)
-				}
+			if srcX2 > srcX1 && dstX2 > dstX1 {
+				// extract ROIs
+				srcRect := image.Rect(srcX1, 0, srcX2, prevWarped.Rows())
+				dstRect := image.Rect(dstX1, 0, dstX2, canvas.Rows())
+				srcRoi := prevWarped.Region(srcRect)
+				dstRoi := canvas.Region(dstRect)
+
+				// build mask of non-black pixels
+				gray := gocv.NewMat()
+				mask := gocv.NewMat()
+				gocv.CvtColor(srcRoi, &gray, gocv.ColorBGRToGray)
+				gocv.Threshold(gray, &mask, 1, 255, gocv.ThresholdBinary)
+
+				// copy only where mask != 0
+				srcRoi.CopyToWithMask(&dstRoi, mask)
+
+				// cleanup
+				gray.Close()
+				mask.Close()
+				srcRoi.Close()
+				dstRoi.Close()
 			}
 		}
 
-		// Add frame to canvas
-		gocv.AddWeighted(canvas, 1, frame, 1, 0, &canvas)
+		// prepare next iteration
+		if hasPrev {
+			prevWarped.Close()
+		}
+		prevWarped = warped.Clone()
+		prevLeft = currLeft
+		hasPrev = true
 
-		// Update weights
-		gocv.Add(weights, mask, &weights)
-
-		mask.Close()
-		log.Info("Processed frame")
-	}
-
-	// Normalize by weights
-	for y := 0; y < canvasHeight; y++ {
-		for x := 0; x < canvasWidth; x++ {
-			w := weights.GetFloatAt(y, x)
-			if w > 0 {
-				for c := 0; c < 3; c++ {
-					val := float32(canvas.GetVecbAt(y, x)[c]) / w
-					canvas.SetUCharAt(y, x+c*canvasWidth, byte(val))
-				}
-			}
+		// optional debug dump
+		dbg := fmt.Sprintf("output/canvas_after_frame_%d.jpg", idx)
+		if ok := gocv.IMWrite(dbg, canvas); !ok {
+			log.Error("Failed to save canvas", "path", dbg)
 		}
 	}
 
-	weights.Close()
+	// 3) final tail slice
+	if hasPrev {
+		srcX1 := clampInt(prevLeft, 0, prevWarped.Cols())
+		srcX2 := clampInt(prevWarped.Cols(), 0, prevWarped.Cols())
+		dstX1 := clampInt(srcX1+frameXOffset, 0, canvas.Cols())
+		dstX2 := clampInt(srcX2+frameXOffset, 0, canvas.Cols())
+
+		if srcX2 > srcX1 && dstX2 > dstX1 {
+			srcRect := image.Rect(srcX1, 0, srcX2, prevWarped.Rows())
+			dstRect := image.Rect(dstX1, 0, dstX2, canvas.Rows())
+			srcRoi := prevWarped.Region(srcRect)
+			dstRoi := canvas.Region(dstRect)
+
+			gray := gocv.NewMat()
+			mask := gocv.NewMat()
+			gocv.CvtColor(srcRoi, &gray, gocv.ColorBGRToGray)
+			gocv.Threshold(gray, &mask, 1, 255, gocv.ThresholdBinary)
+			srcRoi.CopyToWithMask(&dstRoi, mask)
+
+			gray.Close()
+			mask.Close()
+			srcRoi.Close()
+			dstRoi.Close()
+		}
+		prevWarped.Close()
+	}
+
 	log.Info("Completed panorama stitching")
 	return canvas
+}
+
+// findLeftmostNonBlack returns the x-coordinate of the first column
+// in m that contains any non-black pixel, or –1 if none.
+func findLeftmostNonBlack(m gocv.Mat) int {
+	rows, cols := m.Rows(), m.Cols()
+	for x := 0; x < cols; x++ {
+		for y := 0; y < rows; y++ {
+			pix := m.GetVecbAt(y, x)
+			if pix[0] != 0 || pix[1] != 0 || pix[2] != 0 {
+				return x
+			}
+		}
+	}
+	return -1
 }
 
 // ImagesToVideo converts a slice of Mats into an MP4 video file.
@@ -652,6 +747,26 @@ type resJob struct {
 	mat gocv.Mat
 }
 
+// prettyPrintMatrix prints a gocv.Mat in a human-readable format.
+func prettyPrintMatrix(mat gocv.Mat) string {
+	rows, cols := mat.Rows(), mat.Cols()
+	if rows == 0 || cols == 0 {
+		return "Empty matrix"
+	}
+	var result string
+	for r := 0; r < rows; r++ {
+		for c := 0; c < cols; c++ {
+			val := mat.GetDoubleAt(r, c)
+			if c > 0 {
+				result += " "
+			}
+			result += fmt.Sprintf("%.2f", val)
+		}
+		result += "\n"
+	}
+	return result
+}
+
 // GenerateMosaicVideo generates a panoramic mosaic video using a worker pool.
 func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 	videoName := filepath.Base(videoPath)
@@ -683,13 +798,43 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 	log.Info("Calculated frame transformations", "reference_frame", refIndex)
 
 	// Calculate canvas size
-	canvasWidth, canvasHeight, frameXOffset, _ := CalculateCanvasSize(frames, transforms, refIndex)
+	canvasWidth, canvasHeight, frameXOffset, frameYOffset := CalculateCanvasSize(frames, transforms, refIndex)
 	log.Info("Calculated canvas dimensions",
 		"width", canvasWidth,
 		"height", canvasHeight,
-		"x_offset", frameXOffset)
+		"x_offset", frameXOffset,
+		"y_offset", frameYOffset,
+	)
 
-	// Warp frames to align with reference frame
+	// Invert each transform and apply the canvas offsets, just like your Python version
+	invTransforms := make([]*gocv.Mat, len(transforms))
+	for i, T := range transforms {
+		// invert T
+		inv := gocv.NewMat()
+		ma := *T
+
+		if ok := gocv.Invert(ma, &inv, gocv.SolveDecompositionSvd); ok <= 0 {
+			// print the matrix `ma``
+
+			//pretty print `ma`
+			log.Error("Failed to invert transform", "index", i, "matrix", prettyPrintMatrix(ma))
+
+			log.Error("Failed to invert transform", "index", i)
+			continue
+		}
+		// translate by the offsets
+		tx := inv.GetDoubleAt(0, 2) + float64(frameXOffset)
+		ty := inv.GetDoubleAt(1, 2) + float64(frameYOffset)
+		inv.SetDoubleAt(0, 2, tx)
+		inv.SetDoubleAt(1, 2, ty)
+
+		// store and release the original
+		invTransforms[i] = &inv
+		T.Close()
+	}
+	transforms = invTransforms
+
+	// Now warp all frames using the inverted, offset transforms
 	warpedFrames := make([]gocv.Mat, len(frames))
 	for i := range frames {
 		warpedFrames[i] = gocv.NewMat()
@@ -706,12 +851,13 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 		go func() {
 			defer wg.Done()
 			for i := range jobs {
-				// Warp frame to align with reference frame
-				warped := gocv.NewMat()
+				var warped gocv.Mat
 				if i == refIndex {
 					warped = frames[i].Clone()
 				} else {
+					// use the inverted & offset transform here
 					transform := transforms[i]
+					warped = gocv.NewMat()
 					gocv.WarpPerspective(frames[i], &warped, *transform, image.Pt(canvasWidth, canvasHeight))
 				}
 				results <- resJob{idx: i, mat: warped}
@@ -725,15 +871,20 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 	}
 	close(jobs)
 
-	// Wait for all workers to finish
+	// Collect results
 	go func() {
 		wg.Wait()
 		close(results)
 	}()
 
-	// Collect results
 	for job := range results {
 		warpedFrames[job.idx] = job.mat
+		debugPath := filepath.Join(outputDir, fmt.Sprintf("warped_frame_%d.jpg", job.idx))
+		if ok := gocv.IMWrite(debugPath, job.mat); !ok {
+			log.Error("Failed to save warped frame", "index", job.idx)
+		} else {
+			log.Info("Saved warped frame", "index", job.idx, "path", debugPath)
+		}
 	}
 
 	// Generate output filename
@@ -743,8 +894,21 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 	}
 	outputPath := filepath.Join(outputDir, outputName+".mp4")
 
+	// Generate evenly spaced indices between config.config.MinimalPixelColumnIndex and length of frames
+	// in python its selected_indices = np.linspace(MINIMAL_PIXEL_COLUMN_INDEX, total_frames, num_frames, dtype=int).tolist()
+	// in Go:
+	// numFrames := len(frames)
+	// selectedIndices := make([]int, 0, numFrames)
+	// for i := 0; i < numFrames; i++ {
+	// 	if i >= config.MinimalPixelColumnIndex && i < numFrames {
+	// 		selectedIndices = append(selectedIndices, i)
+	// 	}
+	// }
+
+	// log.Info("Selected frames for mosaic", "count", selectedIndices)
+
 	// Stitch panorama
-	mosaic := StitchPanorama(videoName, warpedFrames, canvasWidth, canvasHeight, frameXOffset)
+	mosaic := StitchPanorama(videoName, warpedFrames, canvasWidth, canvasHeight, config.MinimalPixelColumnIndex)
 	log.Info("Stitched panorama", "output", outputPath)
 
 	// Save as video
