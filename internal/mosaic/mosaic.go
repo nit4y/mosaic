@@ -25,6 +25,20 @@ func StabilizeHorizontalMotion(matrix gocv.Mat) gocv.Mat {
 	return matrix
 }
 
+// StabilizeNoScale zeroes out any scale in rows 0 and 1 of a 3×3 matrix,
+// so after this call the diagonal entries are 1.0 (unit scale).
+func StabilizeScale(mat gocv.Mat) gocv.Mat {
+	// set X scale to 1
+	mat.SetDoubleAt(0, 0, 1.0)
+	// set Y scale to 1
+	mat.SetDoubleAt(1, 1, 1.0)
+	return mat
+}
+
+func StablizeTranslation(mat gocv.Mat) gocv.Mat {
+	return StabilizeScale(StabilizeHorizontalMotion(mat))
+}
+
 // ApplyBlur downscales the image by config.BlurResolution, then upscales it
 // back to its original size, producing a simple blur.
 func ApplyBlur(img gocv.Mat) gocv.Mat {
@@ -225,8 +239,15 @@ func AlignImages(img1, img2 gocv.Mat, calcDirection bool) (*gocv.Mat, string) {
 	defer v1.Close()
 	v2 := gocv.NewPoint2fVectorFromPoints(valid2)
 	defer v2.Close()
-	aff := gocv.EstimateAffinePartial2DWithParams(v1, v2, gocv.NewMat(), int(gocv.HomographyMethodRANSAC),
-		float64(config.RansacThreshold), 2000, 0.99, 10,
+	aff := gocv.EstimateAffinePartial2DWithParams(
+		v1,
+		v2,
+		gocv.NewMat(),
+		int(gocv.HomographyMethodRANSAC),
+		float64(config.RansacThreshold),
+		config.RansacMaxIterations,
+		config.RansacConfidence,
+		config.RansacFlag,
 	)
 
 	if aff.Empty() {
@@ -245,7 +266,7 @@ func AlignImages(img1, img2 gocv.Mat, calcDirection bool) (*gocv.Mat, string) {
 	log.Info("Homogeneous matrix type", "type", H.Type().String())
 
 	// defer aff.Close()
-	Hh := StabilizeHorizontalMotion(H)
+	Hh := StablizeTranslation(H)
 	if Hh.Empty() {
 		log.Error("Failed to stabilize horizontal motion - empty matrix")
 	}
@@ -516,8 +537,7 @@ func TrimBlackBorders(img gocv.Mat, threshold uint8) gocv.Mat {
 	r := img.Region(image.Rect(minX, minY, maxX+1, maxY+1))
 	cropped := r.Clone()
 	r.Close()
-	// save debug image
-	gocv.IMWrite("cropped.jpg", cropped)
+
 	return cropped
 }
 
@@ -532,8 +552,6 @@ func clampInt(v, min, max int) int {
 	return v
 }
 
-// StitchPanorama builds a panoramic mosaic by copying only the non-black columns
-// between consecutive warped frames into a larger canvas.
 func StitchPanorama(
 	videoName string,
 	warpedFrames []gocv.Mat,
@@ -553,49 +571,82 @@ func StitchPanorama(
 	canvas := gocv.NewMatWithSize(canvasHeight, canvasWidth, gocv.MatTypeCV8UC3)
 	canvas.SetTo(gocv.NewScalar(0, 0, 0, 0))
 
+	// precompute “at least one column-per-frame” width
+	// frameCount := len(warpedFrames)
+	// if frameCount == 0 {
+	// 	return canvas
+	// }
+	// frameWidth := warpedFrames[0].Cols()
+	// minStrip := frameWidth / frameCount
+
 	var prevWarped gocv.Mat
 	prevLeft := 0
 	hasPrev := false
 
+	// this is where we’ll paste the next strip
+	nextDstX := 0
+
 	for idx, warped := range warpedFrames {
-		// 2) find leftmost non-black column
 		currLeft := findLeftmostNonBlack(warped)
 		if currLeft < 0 {
 			continue
 		}
 
 		if hasPrev {
-			// clamp coords
+			// calc desired strip width
+			rawWidth := currLeft - prevLeft
+			if rawWidth <= 0 {
+				rawWidth = 1 // at least one pixel
+			}
+
+			stripW := rawWidth
+
+			// source X’s in prevWarped
 			srcX1 := clampInt(prevLeft+frameXOffset, 0, prevWarped.Cols())
-			srcX2 := clampInt(currLeft+frameXOffset, 0, prevWarped.Cols())
-			dstX1 := clampInt(srcX1, 0, canvas.Cols())
-			dstX2 := clampInt(srcX2, 0, canvas.Cols())
+			srcX2 := clampInt(srcX1+stripW, 0, prevWarped.Cols())
+			if srcX2 <= srcX1 {
+				log.Warn("nothing to copy from source", "frame", idx)
+			} else {
+				// destination X’s on canvas
+				dstX1 := nextDstX
+				dstX2 := nextDstX + (srcX2 - srcX1)
+				// clamp to canvas bounds
+				if dstX1 < 0 {
+					dstX1 = 0
+				}
+				if dstX2 > canvas.Cols() {
+					// shrink the copy width if we hit the edge
+					dstX2 = canvas.Cols()
+					srcX2 = srcX1 + (dstX2 - dstX1)
+				}
 
-			if srcX2 > srcX1 && dstX2 > dstX1 {
-				// extract ROIs
-				srcRect := image.Rect(srcX1, 0, srcX2, prevWarped.Rows())
-				dstRect := image.Rect(dstX1, 0, dstX2, canvas.Rows())
-				srcRoi := prevWarped.Region(srcRect)
-				dstRoi := canvas.Region(dstRect)
+				if dstX2 > dstX1 {
+					srcRect := image.Rect(srcX1, 0, srcX2, prevWarped.Rows())
+					dstRect := image.Rect(dstX1, 0, dstX2, canvas.Rows())
+					srcRoi := prevWarped.Region(srcRect)
+					dstRoi := canvas.Region(dstRect)
 
-				// build mask of non-black pixels
-				gray := gocv.NewMat()
-				mask := gocv.NewMat()
-				gocv.CvtColor(srcRoi, &gray, gocv.ColorBGRToGray)
-				gocv.Threshold(gray, &mask, 1, 255, gocv.ThresholdBinary)
+					// mask & copy
+					gray := gocv.NewMat()
+					mask := gocv.NewMat()
+					gocv.CvtColor(srcRoi, &gray, gocv.ColorBGRToGray)
+					gocv.Threshold(gray, &mask, 1, 255, gocv.ThresholdBinary)
+					srcRoi.CopyToWithMask(&dstRoi, mask)
 
-				// copy only where mask != 0
-				srcRoi.CopyToWithMask(&dstRoi, mask)
+					gray.Close()
+					mask.Close()
+					srcRoi.Close()
+					dstRoi.Close()
 
-				// cleanup
-				gray.Close()
-				mask.Close()
-				srcRoi.Close()
-				dstRoi.Close()
+					// advance paste pointer
+					nextDstX = dstX2
+				} else {
+					log.Warn("skip paste: dstX1>=dstX2", "dstX1", dstX1, "dstX2", dstX2, "frame", idx)
+				}
 			}
 		}
 
-		// prepare next iteration
+		// prepare for next iteration
 		if hasPrev {
 			prevWarped.Close()
 		}
@@ -603,39 +654,16 @@ func StitchPanorama(
 		prevLeft = currLeft
 		hasPrev = true
 
-		// optional debug dump
+		// debug dump
 		dbg := fmt.Sprintf("output/canvas_after_frame_%d.jpg", idx)
-		if ok := gocv.IMWrite(dbg, canvas); !ok {
+		if !gocv.IMWrite(dbg, canvas) {
 			log.Error("Failed to save canvas", "path", dbg)
 		}
 	}
 
-	// 3) final tail slice
-	if hasPrev {
-		srcX1 := clampInt(prevLeft, 0, prevWarped.Cols())
-		srcX2 := clampInt(prevWarped.Cols(), 0, prevWarped.Cols())
-		dstX1 := clampInt(srcX1+frameXOffset, 0, canvas.Cols())
-		dstX2 := clampInt(srcX2+frameXOffset, 0, canvas.Cols())
-
-		if srcX2 > srcX1 && dstX2 > dstX1 {
-			srcRect := image.Rect(srcX1, 0, srcX2, prevWarped.Rows())
-			dstRect := image.Rect(dstX1, 0, dstX2, canvas.Rows())
-			srcRoi := prevWarped.Region(srcRect)
-			dstRoi := canvas.Region(dstRect)
-
-			gray := gocv.NewMat()
-			mask := gocv.NewMat()
-			gocv.CvtColor(srcRoi, &gray, gocv.ColorBGRToGray)
-			gocv.Threshold(gray, &mask, 1, 255, gocv.ThresholdBinary)
-			srcRoi.CopyToWithMask(&dstRoi, mask)
-
-			gray.Close()
-			mask.Close()
-			srcRoi.Close()
-			dstRoi.Close()
-		}
-		prevWarped.Close()
-	}
+	// (optional) you could also copy a final tail strip here if you want
+	// to fill until the right edge.  But now everything up to nextDstX
+	// is guaranteed non-overlapping and at least minStrip wide.
 
 	log.Info("Completed panorama stitching")
 	return canvas
@@ -872,21 +900,21 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 		go func() {
 			defer wg.Done()
 			for i := range jobs {
-				transform := transforms[i]
+				// transform := transforms[i]
 
-				affine := gocv.NewMatWithSize(2, 3, gocv.MatTypeCV64F)
-				affine.SetDoubleAt(0, 0, transform.GetDoubleAt(0, 0))
-				affine.SetDoubleAt(0, 1, transform.GetDoubleAt(0, 1))
-				affine.SetDoubleAt(0, 2, transform.GetDoubleAt(0, 2))
-				affine.SetDoubleAt(1, 0, transform.GetDoubleAt(1, 0))
-				affine.SetDoubleAt(1, 1, transform.GetDoubleAt(1, 1))
-				affine.SetDoubleAt(1, 2, transform.GetDoubleAt(1, 2))
+				// affine := gocv.NewMatWithSize(2, 3, gocv.MatTypeCV64F)
+				// affine.SetDoubleAt(0, 0, transform.GetDoubleAt(0, 0))
+				// affine.SetDoubleAt(0, 1, transform.GetDoubleAt(0, 1))
+				// affine.SetDoubleAt(0, 2, transform.GetDoubleAt(0, 2))
+				// affine.SetDoubleAt(1, 0, transform.GetDoubleAt(1, 0))
+				// affine.SetDoubleAt(1, 1, transform.GetDoubleAt(1, 1))
+				// affine.SetDoubleAt(1, 2, transform.GetDoubleAt(1, 2))
 
 				warped := gocv.NewMat()
-				gocv.WarpAffineWithParams(
+				gocv.WarpPerspectiveWithParams(
 					frames[i],
 					&warped,
-					affine,
+					*transforms[i],
 					image.Pt(canvasWidth, canvasHeight),
 					gocv.InterpolationLinear,
 					gocv.BorderConstant,

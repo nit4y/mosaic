@@ -16,7 +16,10 @@ const (
 	BlurResolution = 0.5 // Downscale factor for images
 
 	// RANSAC
-	RansacThreshold = 1 // Threshold for inlier determination
+	RansacThreshold     = 1   // Threshold for inlier determination
+	RansacConfidence    = 0.5 // Confidence level for RANSAC
+	RansacMaxIterations = 100 // Maximum number of RANSAC iterations
+	RansacFlag          = 0
 
 	// Stitching
 	MinimalPixelColumnIndex = 10 // Minimal column index for overlapping region
@@ -49,6 +52,7 @@ var (
 	LKCriteria        = gocv.NewTermCriteria(gocv.Count|gocv.EPS, 10, 0.03)
 	LKFlags           = 0
 	LKMinEigThreshold = 1e-4
+	LKBlurKernelSize  = image.Pt(5, 5)
 
 	// Dynamic mosaics video filenames
 	DynamicMosaics = []string{"Trees.mp4", "Iguazu.mp4"}
