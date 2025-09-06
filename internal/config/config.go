@@ -25,14 +25,17 @@ const (
 	MinimalPixelColumnIndex = 10 // Minimal column index for overlapping region
 
 	// Output settings
-	TargetFPS  = 30 // Frames per second for output video
-	StartFrame = 10 // First frame index to process
+	OutputFPS             = 15 // Frames per second for output video
+	OutputLengthInSeconds = 1  // Length of output video in seconds
+	StartFrame            = 10 // First frame index to process
 
 	// I/O and concurrency
 	InputDir           = "input"
 	OutputDir          = "my_output"
 	ProcessPoolWorkers = 4
 	ThreadPoolWorkers  = 2
+
+	StitcherWorkers = 4
 
 	// Directions
 	Left  = "left"
