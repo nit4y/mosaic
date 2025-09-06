@@ -587,6 +587,7 @@ func StitchPanorama(
 	nextDstX := 0
 
 	for idx, warped := range warpedFrames {
+		log.Debug("Stitching frame", "index", idx, "offset", frameXOffset)
 		currLeft := findLeftmostNonBlack(warped)
 		if currLeft < 0 {
 			continue
@@ -685,17 +686,17 @@ func findLeftmostNonBlack(m gocv.Mat) int {
 }
 
 // GenerateVideoFromFrames converts a slice of Mats into an MP4 video file.
-func GenerateVideoFromFrames(images []gocv.Mat, outputPath string, fps int) error {
+func GenerateVideoFromFrames(
+	images []resJob,
+	height int,
+	width int,
+	outputPath string,
+	fps int) error {
+
 	log := logger.WithOperation("create_video")
 	log.Info("Creating video", "output", outputPath, "fps", fps, "frame_count", len(images))
 
-	if len(images) == 0 {
-		return fmt.Errorf("no images provided")
-	}
-
 	// Get dimensions from first image
-	height := images[0].Rows()
-	width := images[0].Cols()
 	log.Info("Video dimensions", "width", width, "height", height)
 
 	// Create video writer
@@ -706,11 +707,11 @@ func GenerateVideoFromFrames(images []gocv.Mat, outputPath string, fps int) erro
 	defer writer.Close()
 
 	// Write frames
-	for i, img := range images {
-		if err := writer.Write(img); err != nil {
-			return fmt.Errorf("failed to write frame %d: %w", i, err)
+	for _, job := range images {
+		if err := writer.Write(job.mat); err != nil {
+			return fmt.Errorf("failed to write frame %d: %w", job.idx, err)
 		}
-		log.Info("Wrote frame", "frame", i)
+		log.Info("Wrote frame", "frame", job.idx)
 	}
 
 	log.Info("Video creation completed")
@@ -816,6 +817,25 @@ func prettyPrintMatrix(mat gocv.Mat) string {
 	return result
 }
 
+func LinspaceChan(start, stop, count int) <-chan int {
+	ch := make(chan int)
+	go func() {
+		defer close(ch)
+		if count <= 0 {
+			return
+		}
+		if count == 1 {
+			ch <- start
+			return
+		}
+		step := float64(stop-start) / float64(count-1)
+		for i := 0; i < count; i++ {
+			ch <- int(float64(start) + step*float64(i))
+		}
+	}()
+	return ch
+}
+
 // GenerateMosaicVideo generates a panoramic mosaic video using a worker pool.
 func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 	videoName := filepath.Base(videoPath)
@@ -900,16 +920,6 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 		go func() {
 			defer wg.Done()
 			for i := range jobs {
-				// transform := transforms[i]
-
-				// affine := gocv.NewMatWithSize(2, 3, gocv.MatTypeCV64F)
-				// affine.SetDoubleAt(0, 0, transform.GetDoubleAt(0, 0))
-				// affine.SetDoubleAt(0, 1, transform.GetDoubleAt(0, 1))
-				// affine.SetDoubleAt(0, 2, transform.GetDoubleAt(0, 2))
-				// affine.SetDoubleAt(1, 0, transform.GetDoubleAt(1, 0))
-				// affine.SetDoubleAt(1, 1, transform.GetDoubleAt(1, 1))
-				// affine.SetDoubleAt(1, 2, transform.GetDoubleAt(1, 2))
-
 				warped := gocv.NewMat()
 				gocv.WarpPerspectiveWithParams(
 					frames[i],
@@ -954,25 +964,57 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 	}
 	outputPath := filepath.Join(outputDir, outputName+".mp4")
 
-	// Generate evenly spaced indices between config.config.MinimalPixelColumnIndex and length of frames
-	// in python its selected_indices = np.linspace(MINIMAL_PIXEL_COLUMN_INDEX, total_frames, num_frames, dtype=int).tolist()
-	// in Go:
-	// numFrames := len(frames)
-	// selectedIndices := make([]int, 0, numFrames)
-	// for i := 0; i < numFrames; i++ {
-	// 	if i >= config.MinimalPixelColumnIndex && i < numFrames {
-	// 		selectedIndices = append(selectedIndices, i)
-	// 	}
-	// }
+	selectedIndices := LinspaceChan(config.MinimalPixelColumnIndex, len(warpedFrames), config.OutputFPS*config.OutputLengthInSeconds)
 
-	// log.Info("Selected frames for mosaic", "count", selectedIndices)
+	log.Info("Selected indices for mosaic", "indices", selectedIndices)
 
 	// Stitch panorama
-	mosaic := StitchPanorama(videoName, warpedFrames, canvasWidth, canvasHeight, config.MinimalPixelColumnIndex)
-	log.Info("Stitched panorama", "output", outputPath)
+
+	mosaics := make(chan resJob, 50)
+
+	stitchWg := sync.WaitGroup{}
+	for sticher := 0; sticher < config.StitcherWorkers; sticher++ {
+		stitchWg.Add(1)
+		go func() {
+			defer stitchWg.Done()
+
+			for offset := range selectedIndices {
+				log.Info("Stitching panorama", "offset", offset)
+
+				mosaics <- resJob{
+					idx: offset,
+					mat: StitchPanorama(
+						videoName,
+						warpedFrames,
+						canvasWidth,
+						canvasHeight,
+						offset,
+					),
+				}
+				log.Info("Stitched panorama successfully", "output", outputPath, "offset", offset)
+			}
+		}()
+	}
+
+	// Close the mosaics channel when done
+	go func() {
+		stitchWg.Wait()
+		close(mosaics)
+	}()
+
+	outputFrames := make([]resJob, 0, len(selectedIndices))
+	for job := range mosaics {
+		outputFrames = append(outputFrames, job)
+		log.Info("Received stitched mosaic frame", "index", job.idx)
+	}
+
+	// sort by index to maintain order
+	sort.Slice(outputFrames, func(i, j int) bool {
+		return outputFrames[i].idx < outputFrames[j].idx
+	})
 
 	// Save as video
-	if err := GenerateVideoFromFrames([]gocv.Mat{mosaic}, outputPath, 30); err != nil {
+	if err := GenerateVideoFromFrames(outputFrames, canvasHeight, canvasWidth, outputPath, config.OutputFPS); err != nil {
 		return fmt.Errorf("failed to save video: %w", err)
 	}
 
@@ -983,7 +1025,6 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 	for _, frame := range warpedFrames {
 		frame.Close()
 	}
-	mosaic.Close()
 
 	log.Info("Generated mosaic", "duration", time.Since(start))
 	return nil
