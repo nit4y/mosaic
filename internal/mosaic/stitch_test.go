@@ -102,10 +102,10 @@ func TestStitchPanorama_PaintsExpectedColumnStrips(t *testing.T) {
 }
 
 func TestStitchPanorama_RespectsFrameXOffset(t *testing.T) {
-	// With frameXOffset=5, every strip is shifted right by 5
-	// columns. Frame 0's strip moves from [0,10) → [5,15), etc. The
-	// leftmost 5 columns are unpainted (matching the Python
-	// reference's behavior).
+	// With frameXOffset=5 the regular strips shift right by 5 cols.
+	// The leading strip fills cols [0, L_0+5) from frame 0 so the
+	// left edge isn't black; the trailing strip extends frame 1's
+	// content to the canvas edge (or its content boundary).
 	canvasW, canvasH := 60, 10
 	frames := []gocv.Mat{
 		makeWarped(t, canvasW, canvasH, 0, 20, 80, 0, 0),
@@ -120,13 +120,15 @@ func TestStitchPanorama_RespectsFrameXOffset(t *testing.T) {
 	out := StitchPanorama("offset", frames, canvasW, canvasH, 5)
 	defer out.Close()
 
-	// Cols [0, 5) unpainted, [5, 15) frame 0 (red-ish),
-	// [15, 25) frame 1 tail (green-ish).
+	// Cols [0, 5) covered by the leading strip from frame 0.
 	for x := 0; x < 5; x++ {
-		if columnSum(out, x) != 0 {
-			t.Errorf("col %d should be black under offset shift, got non-zero", x)
+		v := out.GetVecbAt(0, x)
+		if v[0] != 80 || v[1] != 0 {
+			t.Errorf("col %d (leading strip): got %v, want frame 0 colour", x, v)
+			break
 		}
 	}
+	// Cols [5, 15) regular strip from frame 0 between L_0+5 and L_1+5.
 	for x := 5; x < 15; x++ {
 		v := out.GetVecbAt(0, x)
 		if v[0] != 80 || v[1] != 0 {
@@ -134,12 +136,54 @@ func TestStitchPanorama_RespectsFrameXOffset(t *testing.T) {
 			break
 		}
 	}
-	// frame 1's tail strip extends from leftmost(10)+5=15 to canvas
-	// edge or frame 1 content edge (10+20=30). Both bound by 30.
+	// Cols [15, 30) tail strip from frame 1 (content extends to 30).
 	for x := 15; x < 30; x++ {
 		v := out.GetVecbAt(0, x)
 		if v[0] != 0 || v[1] != 80 {
 			t.Errorf("col %d frame1 tail shifted: got %v", x, v)
+			break
+		}
+	}
+}
+
+func TestStitchPanorama_LeadingStripFillsLeftWhenOffsetLarge(t *testing.T) {
+	// When frameXOffset is large (mimicking the Python reference's
+	// MINIMAL_PIXEL_COLUMN_INDEX..len(warped_frames) linspace, which
+	// for a long video can shift strips by hundreds of cols), the
+	// regular strips alone leave a gaping black wedge on the left.
+	// The leading strip must paint cols [0, L_0+offset) from the
+	// first non-empty frame.
+	canvasW, canvasH := 200, 10
+	frames := []gocv.Mat{
+		// Frame 0 spans cols [0, 60).
+		makeWarped(t, canvasW, canvasH, 0, 60, 90, 0, 0),
+		// Frame 1 spans cols [20, 80).
+		makeWarped(t, canvasW, canvasH, 20, 60, 0, 90, 0),
+	}
+	defer func() {
+		for _, f := range frames {
+			f.Close()
+		}
+	}()
+
+	// Pick offset=30 so the first regular strip would start at col 30
+	// instead of col 0 → cols [0, 30) need the leading-strip fill.
+	out := StitchPanorama("lead", frames, canvasW, canvasH, 30)
+	defer out.Close()
+
+	for x := 0; x < 30; x++ {
+		v := out.GetVecbAt(0, x)
+		if v[0] != 90 || v[1] != 0 || v[2] != 0 {
+			t.Errorf("leading-strip col %d: got %v, want frame 0 colour [90 0 0]", x, v)
+			break
+		}
+	}
+	// Sanity: the regular strip (frame 0 between L_0+offset=30 and
+	// L_1+offset=50) should also be frame 0's colour.
+	for x := 30; x < 50; x++ {
+		v := out.GetVecbAt(0, x)
+		if v[0] != 90 || v[1] != 0 {
+			t.Errorf("regular strip col %d: got %v, want frame 0 colour", x, v)
 			break
 		}
 	}

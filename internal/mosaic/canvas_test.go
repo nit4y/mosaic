@@ -20,10 +20,8 @@ func makeTransform(tx, ty float64) *gocv.Mat {
 }
 
 func TestCalculateCanvasSize_ExpandsBounds(t *testing.T) {
-	// Single frame of size 100x50 with three transforms — one
-	// reference (skipped via refIndex=1), one pushed right by 30, one
-	// pushed left by 10 and up by 5. Expected canvas covers full
-	// range.
+	// Three frames of size 100x50: one at the reference (skipped),
+	// one with tx=-10/ty=-5, one with tx=+30/ty=0.
 	frame := gocv.NewMatWithSize(50, 100, gocv.MatTypeCV8UC3)
 	defer frame.Close()
 	frames := []gocv.Mat{frame, frame, frame}
@@ -45,11 +43,38 @@ func TestCalculateCanvasSize_ExpandsBounds(t *testing.T) {
 	if h != 55 {
 		t.Errorf("canvas height = %d, want 55", h)
 	}
-	if xOff != 10 {
-		t.Errorf("x offset = %d, want 10", xOff)
+	// The X offset must equal maxX so the inverted transform of the
+	// most-positive-tx frame lands at canvas col 0. maxX = 30.
+	if xOff != 30 {
+		t.Errorf("x offset = %d, want 30 (maxX)", xOff)
 	}
-	if yOff != 5 {
-		t.Errorf("y offset = %d, want 5", yOff)
+	// maxY = 0 (only one frame has ty != 0, and it's negative); the
+	// offset clamps to 0 because shifting by a negative would push
+	// everything left.
+	if yOff != 0 {
+		t.Errorf("y offset = %d, want 0 (clamped: maxY <= 0)", yOff)
+	}
+}
+
+func TestCalculateCanvasSize_BothNegativeAndPositiveY(t *testing.T) {
+	// When both signs are represented, maxY is the positive max.
+	frame := gocv.NewMatWithSize(50, 100, gocv.MatTypeCV8UC3)
+	defer frame.Close()
+	frames := []gocv.Mat{frame, frame, frame}
+
+	t0 := makeTransform(-10, -5) // up
+	defer t0.Close()
+	t1 := makeTransform(0, 0)
+	defer t1.Close()
+	t2 := makeTransform(30, 8) // down
+	defer t2.Close()
+
+	_, h, _, yOff := CalculateCanvasSize(frames, []*gocv.Mat{t0, t1, t2}, 1)
+	if h != 13+50 {
+		t.Errorf("canvas height = %d, want 63", h)
+	}
+	if yOff != 8 {
+		t.Errorf("y offset = %d, want 8 (maxY)", yOff)
 	}
 }
 
@@ -66,8 +91,6 @@ func TestCalculateCanvasSize_SkipsNilAndEmpty(t *testing.T) {
 	t2 := makeTransform(-20, 0)
 	defer t2.Close()
 
-	// refIndex=1, transforms[1] is empty, plus a nil slot to make sure
-	// it's tolerated.
 	transforms := []*gocv.Mat{t0, emptyPtr, t2}
 	w, _, xOff, _ := CalculateCanvasSize(frames, transforms, 1)
 
@@ -75,8 +98,9 @@ func TestCalculateCanvasSize_SkipsNilAndEmpty(t *testing.T) {
 	if w != 110 {
 		t.Errorf("canvas width = %d, want 110 (empty transform should be ignored)", w)
 	}
-	if xOff != 20 {
-		t.Errorf("xOff = %d, want 20", xOff)
+	// Offset = maxX = 50.
+	if xOff != 50 {
+		t.Errorf("xOff = %d, want 50 (maxX)", xOff)
 	}
 }
 

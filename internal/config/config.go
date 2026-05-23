@@ -24,6 +24,16 @@ const (
 	// Stitching
 	MinimalPixelColumnIndex = 10 // Minimal column index for overlapping region
 
+	// YTranslationDamping scales the per-pair vertical translation
+	// component (ty) of each homography before accumulation.
+	//   1.0 → keep ty as-is (original behavior)
+	//   0.0 → fully remove ty (panorama stays at a constant y)
+	// Lower values shrink the canvas height and stop the right side
+	// of long pans from tapering into black wedges; too aggressive a
+	// damp suppresses real vertical motion. 0.3 is a good default
+	// for tripod / handheld horizontal pans where most ty is noise.
+	YTranslationDamping = 0.0
+
 	// Output settings
 	OutputFPS             = 15 // Frames per second for output video
 	OutputLengthInSeconds = 1  // Length of output video in seconds

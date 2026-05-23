@@ -36,7 +36,21 @@ func StabilizeScale(mat gocv.Mat) gocv.Mat {
 }
 
 func StablizeTranslation(mat gocv.Mat) gocv.Mat {
-	return StabilizeScale(StabilizeHorizontalMotion(mat))
+	mat = StabilizeScale(StabilizeHorizontalMotion(mat))
+	return DampYTranslation(mat, config.YTranslationDamping)
+}
+
+// DampYTranslation scales the ty component (element [1,2]) of a 3×3
+// affine homography by `factor`. factor=1.0 is a no-op; factor=0.0
+// removes vertical translation entirely. Mutates the input Mat in
+// place and returns it (consistent with the other stabilize helpers).
+func DampYTranslation(mat gocv.Mat, factor float64) gocv.Mat {
+	if mat.Empty() || mat.Rows() < 2 || mat.Cols() < 3 {
+		return mat
+	}
+	ty := mat.GetDoubleAt(1, 2)
+	mat.SetDoubleAt(1, 2, ty*factor)
+	return mat
 }
 
 // ApplyBlur downscales the image by config.BlurResolution, then upscales it
@@ -453,11 +467,27 @@ func CalculateCanvasSize(frames []gocv.Mat, transforms []*gocv.Mat, refIndex int
 		maxY = math.Max(maxY, ty)
 	}
 
-	// Calculate final canvas dimensions
+	// Canvas dimensions = the span of original-transform translations
+	// plus one frame width/height.
 	canvasWidth := int(math.Ceil(maxX - minX + float64(width)))
 	canvasHeight := int(math.Ceil(maxY - minY + float64(height)))
-	frameXOffset := int(math.Abs(minX))
-	frameYOffset := int(math.Abs(minY))
+	// Offsets must shift INVERTED transforms (frame i → ref) so the
+	// leftmost/topmost frame lands at canvas origin (0, 0). Since
+	// inv(T_i).tx = -T_i.tx, the smallest inv.tx is -max(T_i.tx) =
+	// -maxX. To make that frame land at canvas col 0, we add +maxX
+	// as the X offset. (The earlier code used -minX, which placed
+	// the chronologically-last frame past the right edge of the
+	// canvas — empirically reproducible by inspecting warped frame
+	// dumps where the final frame came out entirely black.) Same
+	// logic applies to Y.
+	frameXOffset := int(math.Ceil(maxX))
+	frameYOffset := int(math.Ceil(maxY))
+	if frameXOffset < 0 {
+		frameXOffset = 0
+	}
+	if frameYOffset < 0 {
+		frameYOffset = 0
+	}
 
 	log.Info("Calculated canvas dimensions",
 		"width", canvasWidth,
@@ -660,8 +690,8 @@ func StitchPanorama(
 		return canvas
 	}
 
-	var prevWarped *gocv.Mat
-	prevLeftmostX := 0
+	var firstWarped, prevWarped *gocv.Mat
+	firstLeftmostX, prevLeftmostX := 0, 0
 
 	for i := range warpedFrames {
 		warped := &warpedFrames[i]
@@ -678,14 +708,28 @@ func StitchPanorama(
 
 		if prevWarped != nil {
 			paintStrip(canvas, *prevWarped, prevLeftmostX+frameXOffset, currLeftmostX+frameXOffset)
+		} else {
+			// First non-empty frame seen — remember it for the
+			// leading strip painted after the loop.
+			firstWarped = warped
+			firstLeftmostX = currLeftmostX
 		}
 		prevWarped = warped
 		prevLeftmostX = currLeftmostX
 	}
 
-	// Tail strip: paint the rightmost portion of the final non-black
-	// frame so the right edge of the canvas isn't black. The strip
-	// runs from prevLeftmostX+offset to the canvas right edge.
+	// Leading strip: paint canvas cols [0, firstLeftmostX+offset)
+	// from the first non-empty frame so the panorama's left edge
+	// isn't black even when frameXOffset shifts the regular strips
+	// far to the right (the offset can be > the panorama height for
+	// long videos because the Python reference linspaces it from
+	// MinimalPixelColumnIndex up to len(warpedFrames)).
+	if firstWarped != nil {
+		paintStrip(canvas, *firstWarped, 0, firstLeftmostX+frameXOffset)
+	}
+	// Tail strip: paint cols [prevLeftmostX+offset, canvas.Cols())
+	// from the last non-empty frame so the right edge is filled in
+	// the same way.
 	if prevWarped != nil {
 		paintStrip(canvas, *prevWarped, prevLeftmostX+frameXOffset, canvas.Cols())
 	}

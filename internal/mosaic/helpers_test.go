@@ -142,6 +142,47 @@ func TestToHomogeneous(t *testing.T) {
 	}
 }
 
+func TestDampYTranslation(t *testing.T) {
+	cases := []struct {
+		name   string
+		ty     float64
+		factor float64
+		want   float64
+	}{
+		{"no-op factor 1.0", 25, 1.0, 25},
+		{"zero factor strips ty", 25, 0.0, 0},
+		{"factor 0.3 reduces", 100, 0.3, 30},
+		{"negative ty respected", -42, 0.5, -21},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := gocv.NewMatWithSize(3, 3, gocv.MatTypeCV64F)
+			defer m.Close()
+			m.SetDoubleAt(0, 0, 1)
+			m.SetDoubleAt(1, 1, 1)
+			m.SetDoubleAt(2, 2, 1)
+			m.SetDoubleAt(0, 2, 50) // tx — must remain unchanged
+			m.SetDoubleAt(1, 2, tc.ty)
+
+			out := DampYTranslation(m, tc.factor)
+			if got := out.GetDoubleAt(1, 2); math.Abs(got-tc.want) > 1e-9 {
+				t.Errorf("ty: got %v, want %v", got, tc.want)
+			}
+			// tx untouched.
+			if got := out.GetDoubleAt(0, 2); math.Abs(got-50) > 1e-9 {
+				t.Errorf("tx changed unexpectedly: got %v, want 50", got)
+			}
+		})
+	}
+}
+
+func TestDampYTranslation_EmptyMatNoCrash(t *testing.T) {
+	m := gocv.NewMat()
+	defer m.Close()
+	// Just ensuring no panic / no nil-deref on a content-empty mat.
+	_ = DampYTranslation(m, 0.5)
+}
+
 func TestStablizeTranslation(t *testing.T) {
 	// Start from a homogeneous matrix with scale and skew
 	h := gocv.NewMatWithSize(3, 3, gocv.MatTypeCV64F)
@@ -170,12 +211,15 @@ func TestStablizeTranslation(t *testing.T) {
 	if got := out.GetDoubleAt(1, 0); math.Abs(got) > 1e-9 {
 		t.Errorf("skew (1,0) = %v, want 0", got)
 	}
-	// translations should be preserved
+	// tx should be preserved.
 	if got := out.GetDoubleAt(0, 2); math.Abs(got-25) > 1e-9 {
 		t.Errorf("tx = %v, want 25", got)
 	}
-	if got := out.GetDoubleAt(1, 2); math.Abs(got-(-7)) > 1e-9 {
-		t.Errorf("ty = %v, want -7", got)
+	// ty is damped by config.YTranslationDamping (relax vertical
+	// drift across long pans).
+	wantTy := -7 * config.YTranslationDamping
+	if got := out.GetDoubleAt(1, 2); math.Abs(got-wantTy) > 1e-9 {
+		t.Errorf("ty = %v, want %v (damped)", got, wantTy)
 	}
 }
 
