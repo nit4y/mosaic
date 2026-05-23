@@ -215,8 +215,7 @@ func TestStablizeTranslation(t *testing.T) {
 	if got := out.GetDoubleAt(0, 2); math.Abs(got-25) > 1e-9 {
 		t.Errorf("tx = %v, want 25", got)
 	}
-	// ty is damped by config.YTranslationDamping (relax vertical
-	// drift across long pans).
+	// ty is scaled by config.YTranslationDamping (default 1.0 = no-op).
 	wantTy := -7 * config.YTranslationDamping
 	if got := out.GetDoubleAt(1, 2); math.Abs(got-wantTy) > 1e-9 {
 		t.Errorf("ty = %v, want %v (damped)", got, wantTy)

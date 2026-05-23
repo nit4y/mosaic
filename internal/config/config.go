@@ -26,13 +26,14 @@ const (
 
 	// YTranslationDamping scales the per-pair vertical translation
 	// component (ty) of each homography before accumulation.
-	//   1.0 → keep ty as-is (original behavior)
+	//   1.0 → keep ty as-is (preserve real vertical motion)
 	//   0.0 → fully remove ty (panorama stays at a constant y)
-	// Lower values shrink the canvas height and stop the right side
-	// of long pans from tapering into black wedges; too aggressive a
-	// damp suppresses real vertical motion. 0.3 is a good default
-	// for tripod / handheld horizontal pans where most ty is noise.
-	YTranslationDamping = 0.0
+	// Default 1.0 preserves the camera's Y motion, so the canvas
+	// height spans the true (maxY - minY) range and frame strips
+	// land at their correct y indentation. Set lower if accumulated
+	// per-pair ty noise is dominating real motion in a particular
+	// video.
+	YTranslationDamping = 1.0
 
 	// Output settings
 	OutputFPS             = 15 // Frames per second for output video
