@@ -552,119 +552,91 @@ func clampInt(v, min, max int) int {
 	return v
 }
 
+// StitchPanorama composes a single panorama image from a sequence of
+// canvas-sized warped frames. Each warped frame contains the original
+// content placed at its aligned position with the surrounding area
+// black.
+//
+// The algorithm paints frames in temporal order using a "first write
+// wins" mask: for each frame, any non-black pixel that lands on a
+// still-empty canvas pixel is copied. This guarantees the canvas is
+// filled across the full panorama extent (not just the differential
+// strips between consecutive frames) while leaving the earliest
+// available view of each region intact.
+//
+// frameOffset is the index of the frame to use as the "anchor" — that
+// frame is painted first (so its content takes priority where it
+// overlaps with others). Useful for dynamic mosaics where varying the
+// anchor frame over time produces a time-evolving panorama.
 func StitchPanorama(
 	videoName string,
 	warpedFrames []gocv.Mat,
 	canvasWidth,
 	canvasHeight,
-	frameXOffset int,
+	frameOffset int,
 ) gocv.Mat {
 	log := logger.WithVideo(videoName)
 	log.Info("Starting panorama stitching",
 		"frame_count", len(warpedFrames),
 		"canvas_width", canvasWidth,
 		"canvas_height", canvasHeight,
-		"x_offset", frameXOffset,
+		"frame_offset", frameOffset,
 	)
 
-	// 1) Blank canvas
 	canvas := gocv.NewMatWithSize(canvasHeight, canvasWidth, gocv.MatTypeCV8UC3)
 	canvas.SetTo(gocv.NewScalar(0, 0, 0, 0))
 
-	// precompute “at least one column-per-frame” width
-	// frameCount := len(warpedFrames)
-	// if frameCount == 0 {
-	// 	return canvas
-	// }
-	// frameWidth := warpedFrames[0].Cols()
-	// minStrip := frameWidth / frameCount
+	if len(warpedFrames) == 0 {
+		return canvas
+	}
 
-	var prevWarped gocv.Mat
-	prevLeft := 0
-	hasPrev := false
-
-	// this is where we’ll paste the next strip
-	nextDstX := 0
-
-	for idx, warped := range warpedFrames {
-		log.Debug("Stitching frame", "index", idx, "offset", frameXOffset)
-		currLeft := findLeftmostNonBlack(warped)
-		if currLeft < 0 {
-			continue
-		}
-
-		if hasPrev {
-			// calc desired strip width
-			rawWidth := currLeft - prevLeft
-			if rawWidth <= 0 {
-				rawWidth = 1 // at least one pixel
-			}
-
-			stripW := rawWidth
-
-			// source X’s in prevWarped
-			srcX1 := clampInt(prevLeft+frameXOffset, 0, prevWarped.Cols())
-			srcX2 := clampInt(srcX1+stripW, 0, prevWarped.Cols())
-			if srcX2 <= srcX1 {
-				log.Warn("nothing to copy from source", "frame", idx)
-			} else {
-				// destination X’s on canvas
-				dstX1 := nextDstX
-				dstX2 := nextDstX + (srcX2 - srcX1)
-				// clamp to canvas bounds
-				if dstX1 < 0 {
-					dstX1 = 0
-				}
-				if dstX2 > canvas.Cols() {
-					// shrink the copy width if we hit the edge
-					dstX2 = canvas.Cols()
-					srcX2 = srcX1 + (dstX2 - dstX1)
-				}
-
-				if dstX2 > dstX1 {
-					srcRect := image.Rect(srcX1, 0, srcX2, prevWarped.Rows())
-					dstRect := image.Rect(dstX1, 0, dstX2, canvas.Rows())
-					srcRoi := prevWarped.Region(srcRect)
-					dstRoi := canvas.Region(dstRect)
-
-					// mask & copy
-					gray := gocv.NewMat()
-					mask := gocv.NewMat()
-					gocv.CvtColor(srcRoi, &gray, gocv.ColorBGRToGray)
-					gocv.Threshold(gray, &mask, 1, 255, gocv.ThresholdBinary)
-					srcRoi.CopyToWithMask(&dstRoi, mask)
-
-					gray.Close()
-					mask.Close()
-					srcRoi.Close()
-					dstRoi.Close()
-
-					// advance paste pointer
-					nextDstX = dstX2
-				} else {
-					log.Warn("skip paste: dstX1>=dstX2", "dstX1", dstX1, "dstX2", dstX2, "frame", idx)
-				}
-			}
-		}
-
-		// prepare for next iteration
-		if hasPrev {
-			prevWarped.Close()
-		}
-		prevWarped = warped.Clone()
-		prevLeft = currLeft
-		hasPrev = true
-
-		// debug dump
-		dbg := fmt.Sprintf("output/canvas_after_frame_%d.jpg", idx)
-		if !gocv.IMWrite(dbg, canvas) {
-			log.Error("Failed to save canvas", "path", dbg)
+	// Build a paint order. The anchor frame is painted first so its
+	// content "wins" in overlap regions, then the rest are painted in
+	// temporal order skipping the anchor.
+	anchor := clampInt(frameOffset, 0, len(warpedFrames)-1)
+	order := make([]int, 0, len(warpedFrames))
+	order = append(order, anchor)
+	for i := range warpedFrames {
+		if i != anchor {
+			order = append(order, i)
 		}
 	}
 
-	// (optional) you could also copy a final tail strip here if you want
-	// to fill until the right edge.  But now everything up to nextDstX
-	// is guaranteed non-overlapping and at least minStrip wide.
+	// Tracks which canvas pixels have already been written.
+	filled := gocv.NewMatWithSize(canvasHeight, canvasWidth, gocv.MatTypeCV8U)
+	defer filled.Close()
+	filled.SetTo(gocv.NewScalar(0, 0, 0, 0))
+
+	for _, idx := range order {
+		warped := warpedFrames[idx]
+		if warped.Empty() {
+			continue
+		}
+
+		gray := gocv.NewMat()
+		gocv.CvtColor(warped, &gray, gocv.ColorBGRToGray)
+
+		warpedMask := gocv.NewMat()
+		gocv.Threshold(gray, &warpedMask, 1, 255, gocv.ThresholdBinary)
+
+		notFilled := gocv.NewMat()
+		gocv.BitwiseNot(filled, &notFilled)
+
+		paintMask := gocv.NewMat()
+		gocv.BitwiseAnd(warpedMask, notFilled, &paintMask)
+
+		warped.CopyToWithMask(&canvas, paintMask)
+
+		// Mark these pixels as filled.
+		gocv.BitwiseOr(filled, paintMask, &filled)
+
+		gray.Close()
+		warpedMask.Close()
+		notFilled.Close()
+		paintMask.Close()
+
+		log.Debug("Stitched frame", "index", idx)
+	}
 
 	log.Info("Completed panorama stitching")
 	return canvas
