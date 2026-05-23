@@ -754,7 +754,7 @@ func RotateFrameBack(frame gocv.Mat, direction string) gocv.Mat {
 		gocv.Rotate(frame, &original, gocv.Rotate90CounterClockwise)
 	case config.Down:
 		original = gocv.NewMat()
-		gocv.Rotate(frame, &original, gocv.Rotate90CounterClockwise)
+		gocv.Rotate(frame, &original, gocv.Rotate90Clockwise)
 	default:
 		original = frame.Clone()
 	}
