@@ -66,7 +66,7 @@ const (
 	// is OutputFPS * OutputLengthInSeconds; half are unique
 	// panoramas, half are the reversed copy.
 	OutputFPS             = 30 // Frames per second for output video
-	OutputLengthInSeconds = 2  // Length of output video in seconds
+	OutputLengthInSeconds = 4  // Length of output video in seconds (split as 2s forward + 2s reversed)
 	StartFrame            = 10 // First frame index to process
 
 	// I/O and concurrency
