@@ -141,8 +141,46 @@ func KeyPointsToMat(keypoints []gocv.KeyPoint) gocv.Mat {
 	return points
 }
 
-// AlignImages aligns img2 to img1 using ORB keypoints + Lucas-Kanade optical flow.
-// Returns a 3×3 homogeneous Mat with horizontal-only motion and the motion direction.
+// detectCorners finds trackable corners in a grayscale image using
+// the Shi-Tomasi detector (cv::goodFeaturesToTrack). Returns a slice
+// of points and an N×1 CV_32FC2 Mat in the format expected by
+// calcOpticalFlowPyrLK.
+//
+// We use Shi-Tomasi rather than the ORB feature detector the code
+// originally used because the rest of the alignment pipeline
+// (Lucas-Kanade + RANSAC affine) is the textbook LK-tracking
+// pipeline, and Shi-Tomasi corners are the standard input it's
+// optimized for — they're more uniformly distributed across the
+// frame and produce more accurate RANSAC fits. The Python reference
+// in ref/ex4.py uses raw cornerHarris with a 1%-of-max threshold;
+// gocv doesn't expose cornerHarris, but Shi-Tomasi (the default of
+// GoodFeaturesToTrack) is closely related and the canonical OpenCV
+// choice for LK tracking.
+func detectCorners(gray gocv.Mat, maxCorners int, quality float64, minDist float64) ([]gocv.Point2f, gocv.Mat) {
+	corners := gocv.NewMat()
+	if err := gocv.GoodFeaturesToTrack(gray, &corners, maxCorners, quality, minDist); err != nil {
+		corners.Close()
+		return nil, gocv.NewMat()
+	}
+	n := corners.Rows()
+	pts := make([]gocv.Point2f, n)
+	out := gocv.NewMatWithSize(n, 1, gocv.MatTypeCV32FC2)
+	for i := 0; i < n; i++ {
+		// GoodFeaturesToTrack returns Nx1 CV_32FC2; each entry is
+		// (x, y) as a 2-float vector.
+		v := corners.GetVecfAt(i, 0)
+		pts[i] = gocv.Point2f{X: v[0], Y: v[1]}
+		out.SetFloatAt(i, 0, v[0])
+		out.SetFloatAt(i, 1, v[1])
+	}
+	corners.Close()
+	return pts, out
+}
+
+// AlignImages aligns img2 to img1 using Shi-Tomasi corner detection
+// + Lucas-Kanade optical flow + RANSAC affine. Returns a 3×3
+// homogeneous Mat with horizontal-only motion (no rotation/skew, unit
+// scale, Y-damped per config) and the motion direction.
 func AlignImages(img1, img2 gocv.Mat, calcDirection bool) (*gocv.Mat, string) {
 	log := logger.WithOperation("align_images")
 
@@ -154,20 +192,14 @@ func AlignImages(img1, img2 gocv.Mat, calcDirection bool) (*gocv.Mat, string) {
 	gocv.CvtColor(img1, &gray1, gocv.ColorBGRToGray)
 	gocv.CvtColor(img2, &gray2, gocv.ColorBGRToGray)
 
-	// detect ORB keypoints on gray1
-	orb := gocv.NewORBWithParams(500, 1.2, 8, 31, 0, 2, gocv.ORBScoreTypeHarris, 31, 20)
-	defer orb.Close()
-	kps := orb.Detect(gray1)
-
-	// build slice of points
-	ptsList := make([]gocv.Point2f, len(kps))
-	for i, kp := range kps {
-		ptsList[i] = gocv.Point2f{X: float32(kp.X), Y: float32(kp.Y)}
-	}
-
-	// convert slice to Point2fVector then to Mat
-	prevPtsMat := KeyPointsToMat(kps)
+	// Detect Shi-Tomasi corners in gray1 — these are what
+	// Lucas-Kanade will track from frame 1 to frame 2.
+	ptsList, prevPtsMat := detectCorners(gray1, config.MaxCorners, config.CornerQuality, float64(config.CornerMinDist))
 	defer prevPtsMat.Close()
+	if len(ptsList) == 0 {
+		log.Error("No corners detected in gray1")
+		return nil, config.Left
+	}
 
 	// blur for LK stability
 	b1 := ApplyBlur(gray1)
