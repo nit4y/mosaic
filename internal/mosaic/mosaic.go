@@ -239,38 +239,19 @@ func AlignImages(img1, img2 gocv.Mat, calcDirection bool) (*gocv.Mat, string) {
 	defer v1.Close()
 	v2 := gocv.NewPoint2fVectorFromPoints(valid2)
 	defer v2.Close()
+	inliersMask := gocv.NewMat()
+	defer inliersMask.Close()
 	aff := gocv.EstimateAffinePartial2DWithParams(
 		v1,
 		v2,
-		gocv.NewMat(),
+		inliersMask,
 		int(gocv.HomographyMethodRANSAC),
 		float64(config.RansacThreshold),
 		config.RansacMaxIterations,
 		config.RansacConfidence,
 		config.RansacFlag,
 	)
-
-	if aff.Empty() {
-		log.Error("Failed to estimate affine transformation - empty matrix")
-	}
-
-	// defer aff.Close()
-
-	log.Info("Affine matrix type", "type", aff.Type().String())
-
-	// convert to homogeneous and stabilize
-	H := ToHomogeneous(aff)
-	if H.Empty() {
-		log.Error("Failed to convert affine to homogeneous matrix - empty matrix")
-	}
-	log.Info("Homogeneous matrix type", "type", H.Type().String())
-
-	// defer aff.Close()
-	Hh := StablizeTranslation(H)
-	if Hh.Empty() {
-		log.Error("Failed to stabilize horizontal motion - empty matrix")
-	}
-	// defer H.Close()
+	defer aff.Close()
 
 	// compute direction if needed
 	dir := config.Left
@@ -278,9 +259,22 @@ func AlignImages(img1, img2 gocv.Mat, calcDirection bool) (*gocv.Mat, string) {
 		dir = CalcMotionDirection(valid1, valid2)
 	}
 
-	log.Info("Stabilized matrix type", "type", Hh.Type().String())
+	if aff.Empty() || aff.Rows() < 2 || aff.Cols() < 3 {
+		log.Error("Failed to estimate affine transformation",
+			"empty", aff.Empty(),
+			"rows", aff.Rows(),
+			"cols", aff.Cols())
+		return nil, dir
+	}
+
+	// convert to homogeneous (Hh shares storage with H — they are the
+	// same Mat returned by StablizeTranslation, so we close it only on
+	// the failure path).
+	H := ToHomogeneous(aff)
+	Hh := StablizeTranslation(H)
 	if Hh.Empty() {
 		log.Error("Failed to stabilize horizontal motion - empty matrix")
+		Hh.Close()
 		return nil, dir
 	}
 	return &Hh, dir
@@ -297,12 +291,24 @@ func ExtractFrames(videoPath string) ([]gocv.Mat, error) {
 	}
 	defer video.Close()
 
+	if !video.IsOpened() {
+		// VideoCaptureFile can return nil error while still failing to
+		// open the underlying backend (missing codec, corrupt header,
+		// unsupported container) — IsOpened catches that case.
+		return nil, fmt.Errorf("video capture failed to open: %s", videoPath)
+	}
+
 	fps := video.Get(gocv.VideoCaptureFPS)
 	frameCount := int(video.Get(gocv.VideoCaptureFrameCount))
 	log.Info("Video properties", "fps", fps, "total_frames", frameCount)
 
-	// Extract frames
-	frames := make([]gocv.Mat, 0, frameCount)
+	// Cap initial capacity to avoid huge allocations if the container
+	// reports a bogus frame count.
+	cap := frameCount
+	if cap < 0 || cap > 100000 {
+		cap = 0
+	}
+	frames := make([]gocv.Mat, 0, cap)
 	frame := gocv.NewMat()
 	defer frame.Close()
 
@@ -314,6 +320,10 @@ func ExtractFrames(videoPath string) ([]gocv.Mat, error) {
 			continue
 		}
 		frames = append(frames, frame.Clone())
+	}
+
+	if len(frames) == 0 {
+		return nil, fmt.Errorf("no frames could be decoded from %s", videoPath)
 	}
 
 	return frames, nil
@@ -368,14 +378,19 @@ func CalculateTransformations(frames []gocv.Mat) ([]*gocv.Mat, int) {
 	accum := id.Clone() // running product
 	for i := refIdx + 1; i < n; i++ {
 		H, _ := AlignImages(frames[i-1], frames[i], true)
-		if H.Empty() {
+		if H == nil || H.Empty() {
 			log.Error("Failed to align frames for right side", "i", i)
-			H.Close()
+			if H != nil {
+				H.Close()
+			}
+			// Keep transforms[i] = nil; downstream code must guard.
 			continue
 		}
 		// accum = accum @ H
 		tmp := gocv.NewMat()
-		gocv.Gemm(accum, *H, 1.0, gocv.NewMat(), 0.0, &tmp, 0)
+		emptyC := gocv.NewMat()
+		gocv.Gemm(accum, *H, 1.0, emptyC, 0.0, &tmp, 0)
+		emptyC.Close()
 		accum.Close()
 		H.Close()
 		accum = tmp
@@ -385,19 +400,24 @@ func CalculateTransformations(frames []gocv.Mat) ([]*gocv.Mat, int) {
 		transforms[i] = &cl
 		yTranslations = append(yTranslations, accum.GetDoubleAt(1, 2))
 	}
+	accum.Close() // release the right-side running product before reusing the name
 
 	// 5) accumulate to the left of refIdx
 	accum = id.Clone()
 	for i := refIdx - 1; i >= 0; i-- {
 		H, _ := AlignImages(frames[i+1], frames[i], false)
-		if H.Empty() {
+		if H == nil || H.Empty() {
 			log.Error("Failed to align frames for left side", "i", i)
-			H.Close()
+			if H != nil {
+				H.Close()
+			}
 			continue
 		}
 		// accum = H @ accum
 		tmp := gocv.NewMat()
-		gocv.Gemm(*H, accum, 1.0, gocv.NewMat(), 0.0, &tmp, 0)
+		emptyC := gocv.NewMat()
+		gocv.Gemm(*H, accum, 1.0, emptyC, 0.0, &tmp, 0)
+		emptyC.Close()
 		accum.Close()
 		H.Close()
 		accum = tmp
@@ -407,6 +427,7 @@ func CalculateTransformations(frames []gocv.Mat) ([]*gocv.Mat, int) {
 		transforms[i] = &cl
 		yTranslations = append([]float64{accum.GetDoubleAt(1, 2)}, yTranslations...)
 	}
+	accum.Close()
 
 	// 6) compute median of the vertical translations
 	median := Median(yTranslations)
@@ -793,19 +814,46 @@ func LinspaceChan(start, stop, count int) <-chan int {
 	ch := make(chan int)
 	go func() {
 		defer close(ch)
-		if count <= 0 {
-			return
-		}
-		if count == 1 {
-			ch <- start
-			return
-		}
-		step := float64(stop-start) / float64(count-1)
-		for i := 0; i < count; i++ {
-			ch <- int(float64(start) + step*float64(i))
+		for _, v := range linspace(start, stop, count) {
+			ch <- v
 		}
 	}()
 	return ch
+}
+
+// linspace returns `count` evenly-spaced integer values from start to
+// stop (inclusive of both endpoints when count >= 2). Returns an empty
+// slice for count <= 0.
+func linspace(start, stop, count int) []int {
+	if count <= 0 {
+		return []int{}
+	}
+	out := make([]int, 0, count)
+	if count == 1 {
+		out = append(out, start)
+		return out
+	}
+	step := float64(stop-start) / float64(count-1)
+	for i := 0; i < count; i++ {
+		out = append(out, int(float64(start)+step*float64(i)))
+	}
+	return out
+}
+
+// debugWritesEnabled returns true when MOSAIC_DEBUG_FRAMES is set. The
+// per-frame JPEG dumps are several MB of I/O each and are useful for
+// diagnostics but pure noise in production / CI runs.
+func debugWritesEnabled() bool {
+	return os.Getenv("MOSAIC_DEBUG_FRAMES") != ""
+}
+
+// replaceMat closes the old Mat at frames[i] and writes the new one
+// in. Use when an in-place transform returns a fresh Mat for each
+// frame — otherwise the original frame leaks every iteration.
+func replaceMat(frames []gocv.Mat, i int, next gocv.Mat) {
+	old := frames[i]
+	frames[i] = next
+	old.Close()
 }
 
 // GenerateMosaicVideo generates a panoramic mosaic video using a worker pool.
@@ -821,17 +869,23 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 		return fmt.Errorf("failed to extract frames: %w", err)
 	}
 	log.Info("Extracted frames", "count", len(frames))
+	defer func() {
+		for _, f := range frames {
+			f.Close()
+		}
+	}()
 
-	// Trim black borders from all frames
+	// Trim black borders from all frames. The in-place assignment used
+	// to leak the original Mat every iteration.
 	for i := range frames {
-		frames[i] = TrimBlackBorders(frames[i], 10)
+		replaceMat(frames, i, TrimBlackBorders(frames[i], 10))
 	}
 
 	// Detect and normalize motion direction
 	dir := DetectMotionDirection(frames)
 	log.Info("Detected motion direction", "direction", dir)
 	for i := range frames {
-		frames[i] = RotateFrame(frames[i], dir)
+		replaceMat(frames, i, RotateFrame(frames[i], dir))
 	}
 
 	// Calculate transformations between consecutive frames
@@ -847,51 +901,68 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 		"y_offset", frameYOffset,
 	)
 
-	// Invert each transform and apply the canvas offsets, just like your Python version
+	// Invert each transform and apply the canvas offsets.
 	invTransforms := make([]*gocv.Mat, len(transforms))
 	for i, T := range transforms {
-		// invert T
-		inv := gocv.NewMat()
-		ma := *T
-
-		if ok := gocv.Invert(ma, &inv, gocv.SolveDecompositionLu); ok <= 0 {
-			// print the matrix `ma``
-
-			//pretty print `ma`
-			log.Error("Failed to invert transform", "index", i, "matrix", prettyPrintMatrix(ma))
-
-			log.Error("Failed to invert transform", "index", i)
+		if T == nil || T.Empty() {
+			// CalculateTransformations leaves transforms[i] = nil for
+			// frames it couldn't align — propagate that nil through so
+			// downstream skips them instead of nil-derefing.
+			if T != nil {
+				T.Close()
+			}
 			continue
 		}
-		// translate by the offsets
+		inv := gocv.NewMat()
+		if ok := gocv.Invert(*T, &inv, gocv.SolveDecompositionLu); ok <= 0 {
+			log.Error("Failed to invert transform", "index", i, "matrix", prettyPrintMatrix(*T))
+			inv.Close()
+			T.Close()
+			continue
+		}
 		tx := inv.GetDoubleAt(0, 2) + float64(frameXOffset)
 		ty := inv.GetDoubleAt(1, 2) + float64(frameYOffset)
 		inv.SetDoubleAt(0, 2, tx)
 		inv.SetDoubleAt(1, 2, ty)
 
-		// store and release the original
 		invTransforms[i] = &inv
 		T.Close()
 	}
 	transforms = invTransforms
+	defer func() {
+		for _, t := range transforms {
+			if t != nil {
+				t.Close()
+			}
+		}
+	}()
 
 	// Now warp all frames using the inverted, offset transforms
 	warpedFrames := make([]gocv.Mat, len(frames))
-	for i := range frames {
-		warpedFrames[i] = gocv.NewMat()
-	}
+	defer func() {
+		for _, f := range warpedFrames {
+			if !f.Empty() {
+				f.Close()
+			}
+		}
+	}()
 
-	// Create a worker pool for parallel processing
 	jobs := make(chan int, len(frames))
 	results := make(chan resJob, len(frames))
 	var wg sync.WaitGroup
 
-	// Start workers
 	for w := 0; w < config.ProcessPoolWorkers; w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for i := range jobs {
+				if transforms[i] == nil {
+					// Skip frames whose transform couldn't be computed
+					// — send a placeholder NewMat so the index slot
+					// stays aligned with `frames`.
+					results <- resJob{idx: i, mat: gocv.NewMat()}
+					continue
+				}
 				warped := gocv.NewMat()
 				gocv.WarpPerspectiveWithParams(
 					frames[i],
@@ -907,25 +978,24 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 		}()
 	}
 
-	// Send jobs
 	for i := range frames {
 		jobs <- i
 	}
 	close(jobs)
 
-	// Collect results
 	go func() {
 		wg.Wait()
 		close(results)
 	}()
 
+	debugFrames := debugWritesEnabled()
 	for job := range results {
 		warpedFrames[job.idx] = job.mat
-		debugPath := filepath.Join(outputDir, fmt.Sprintf("warped_frame_%d.jpg", job.idx))
-		if ok := gocv.IMWrite(debugPath, job.mat); !ok {
-			log.Error("Failed to save warped frame", "index", job.idx)
-		} else {
-			log.Info("Saved warped frame", "index", job.idx, "path", debugPath)
+		if debugFrames {
+			debugPath := filepath.Join(outputDir, fmt.Sprintf("warped_frame_%d.jpg", job.idx))
+			if ok := gocv.IMWrite(debugPath, job.mat); !ok {
+				log.Error("Failed to save warped frame", "index", job.idx)
+			}
 		}
 	}
 
@@ -936,39 +1006,30 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 	}
 	outputPath := filepath.Join(outputDir, outputName+".mp4")
 
-	selectedIndices := LinspaceChan(config.MinimalPixelColumnIndex, len(warpedFrames), config.OutputFPS*config.OutputLengthInSeconds)
-
+	selectedIndices := linspace(config.MinimalPixelColumnIndex, len(warpedFrames), config.OutputFPS*config.OutputLengthInSeconds)
 	log.Info("Selected indices for mosaic", "indices", selectedIndices)
 
-	// Stitch panorama
-
-	mosaics := make(chan resJob, 50)
+	mosaics := make(chan resJob, len(selectedIndices))
+	jobsCh := make(chan int, len(selectedIndices))
+	for _, idx := range selectedIndices {
+		jobsCh <- idx
+	}
+	close(jobsCh)
 
 	stitchWg := sync.WaitGroup{}
 	for sticher := 0; sticher < config.StitcherWorkers; sticher++ {
 		stitchWg.Add(1)
 		go func() {
 			defer stitchWg.Done()
-
-			for offset := range selectedIndices {
-				log.Info("Stitching panorama", "offset", offset)
-
+			for offset := range jobsCh {
 				mosaics <- resJob{
 					idx: offset,
-					mat: StitchPanorama(
-						videoName,
-						warpedFrames,
-						canvasWidth,
-						canvasHeight,
-						offset,
-					),
+					mat: StitchPanorama(videoName, warpedFrames, canvasWidth, canvasHeight, offset),
 				}
-				log.Info("Stitched panorama successfully", "output", outputPath, "offset", offset)
 			}
 		}()
 	}
 
-	// Close the mosaics channel when done
 	go func() {
 		stitchWg.Wait()
 		close(mosaics)
@@ -977,83 +1038,92 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 	outputFrames := make([]resJob, 0, len(selectedIndices))
 	for job := range mosaics {
 		outputFrames = append(outputFrames, job)
-		log.Info("Received stitched mosaic frame", "index", job.idx)
 	}
+	defer func() {
+		for _, f := range outputFrames {
+			f.mat.Close()
+		}
+	}()
 
-	// sort by index to maintain order
 	sort.Slice(outputFrames, func(i, j int) bool {
 		return outputFrames[i].idx < outputFrames[j].idx
 	})
 
-	// Save as video
 	if err := GenerateVideoFromFrames(outputFrames, canvasHeight, canvasWidth, outputPath, config.OutputFPS); err != nil {
 		return fmt.Errorf("failed to save video: %w", err)
-	}
-
-	// Clean up
-	for _, frame := range frames {
-		frame.Close()
-	}
-	for _, frame := range warpedFrames {
-		frame.Close()
 	}
 
 	log.Info("Generated mosaic", "duration", time.Since(start))
 	return nil
 }
 
-// GenerateVideos processes all .mp4 videos in the input directory.
+// GenerateVideos processes all .mp4 videos in the default input
+// directory ("input/") and writes mosaics under "output/". Convenience
+// wrapper for the CLI; tests and external callers should use
+// GenerateVideosFromDir to keep paths injectable.
 func GenerateVideos() error {
-	// Get all video files from input directory
-	files, err := os.ReadDir("input")
+	return GenerateVideosFromDir(config.InputDir, "output")
+}
+
+// GenerateVideosFromDir is the testable form of GenerateVideos.
+func GenerateVideosFromDir(inputDir, outputDir string) error {
+	videoFiles, err := listVideoFiles(inputDir)
 	if err != nil {
-		return fmt.Errorf("failed to read input directory: %w", err)
+		return err
 	}
-
-	// Filter for video files
-	var videoFiles []string
-	for _, file := range files {
-		if !file.IsDir() {
-			ext := filepath.Ext(file.Name())
-			if ext == ".mp4" || ext == ".avi" || ext == ".mov" {
-				videoFiles = append(videoFiles, filepath.Join("input", file.Name()))
-			}
-		}
-	}
-
 	if len(videoFiles) == 0 {
-		return fmt.Errorf("no video files found in input directory")
+		return fmt.Errorf("no video files found in input directory %q", inputDir)
 	}
 
-	logger.Log.Info("Found video files to process", "count", len(videoFiles))
+	logger.Log.Info("Found video files to process", "count", len(videoFiles), "input_dir", inputDir)
 
-	// Process each video
+	var firstErr error
 	for _, videoPath := range videoFiles {
 		videoName := filepath.Base(videoPath)
 		log := logger.WithVideo(videoName)
 
 		log.Info("Starting video processing")
 
-		// Create output directory if it doesn't exist
-		outputDir := filepath.Join("output", filepath.Base(videoPath))
-		if err := os.MkdirAll(outputDir, 0755); err != nil {
+		videoOutputDir := filepath.Join(outputDir, videoName)
+		if err := os.MkdirAll(videoOutputDir, 0o755); err != nil {
 			log.Error("Failed to create output directory", "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 
-		// Generate both static and dynamic mosaics
-		if err := GenerateMosaicVideo(videoPath, outputDir, false); err != nil {
+		if err := GenerateMosaicVideo(videoPath, videoOutputDir, false); err != nil {
 			log.Error("Failed to generate static mosaic", "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		log.Info("Generated static mosaic")
-
-		// if err := GenerateMosaicVideo(videoPath, outputDir, true); err != nil {
-		// 	log.Error("Failed to generate dynamic mosaic", "error", err)
-		// 	continue
-		// }
-		log.Info("Generated dynamic mosaic")
 	}
 
-	return nil
+	return firstErr
+}
+
+// listVideoFiles returns sorted absolute (or input-dir-relative) paths
+// for video files in dir. Sorted output gives deterministic processing
+// order — useful for both reproducible debugging and stable tests.
+func listVideoFiles(dir string) ([]string, error) {
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read input directory %q: %w", dir, err)
+	}
+	var videoFiles []string
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		ext := filepath.Ext(file.Name())
+		if ext == ".mp4" || ext == ".avi" || ext == ".mov" {
+			videoFiles = append(videoFiles, filepath.Join(dir, file.Name()))
+		}
+	}
+	sort.Strings(videoFiles)
+	return videoFiles, nil
 }
