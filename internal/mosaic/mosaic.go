@@ -118,45 +118,6 @@ func CalcMotionDirection(pts1, pts2 []gocv.Point2f) string {
 	}
 }
 
-// toPoint2fVector converts a Go slice of Point2f into a gocv.Point2fVector.
-func toPoint2fVector(pts []gocv.Point2f) gocv.Point2fVector {
-	return gocv.NewPoint2fVectorFromPoints(pts)
-}
-
-func GetCornerPoints(harris gocv.Mat) gocv.Mat {
-	// Dilate the Harris response
-	kernel := gocv.NewMat()
-	defer kernel.Close()
-	gocv.Dilate(harris, &harris, kernel)
-
-	// Calculate threshold: 1% of max value
-	_, maxVal, _, _ := gocv.MinMaxLoc(harris)
-	threshold := 0.01 * maxVal
-
-	// Threshold the image
-	mask := gocv.NewMat()
-	defer mask.Close()
-	gocv.Threshold(harris, &mask, threshold, 255, gocv.ThresholdBinary)
-
-	// Find non-zero coordinates
-	coords := gocv.NewMat()
-	defer coords.Close()
-	gocv.FindNonZero(mask, &coords)
-
-	// Create points Mat (N, 1, 2) of type CV_32FC2
-	count := coords.Rows()
-	points := gocv.NewMatWithSize(count, 1, gocv.MatTypeCV32FC2)
-
-	for i := 0; i < count; i++ {
-		x := coords.GetVeciAt(i, 0)[0]
-		y := coords.GetVeciAt(i, 0)[1]
-		points.SetFloatAt(i, 0, float32(x))
-		points.SetFloatAt(i, 1, float32(y))
-	}
-
-	return points
-}
-
 func KeyPointsToMat(keypoints []gocv.KeyPoint) gocv.Mat {
 	points := gocv.NewMatWithSize(len(keypoints), 1, gocv.MatTypeCV32FC2)
 	for i, kp := range keypoints {
@@ -661,21 +622,6 @@ func StitchPanorama(
 
 	log.Info("Completed panorama stitching")
 	return canvas
-}
-
-// findLeftmostNonBlack returns the x-coordinate of the first column
-// in m that contains any non-black pixel, or –1 if none.
-func findLeftmostNonBlack(m gocv.Mat) int {
-	rows, cols := m.Rows(), m.Cols()
-	for x := 0; x < cols; x++ {
-		for y := 0; y < rows; y++ {
-			pix := m.GetVecbAt(y, x)
-			if pix[0] != 0 || pix[1] != 0 || pix[2] != 0 {
-				return x
-			}
-		}
-	}
-	return -1
 }
 
 // GenerateVideoFromFrames converts a slice of Mats into an MP4 video file.
