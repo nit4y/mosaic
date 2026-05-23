@@ -54,9 +54,12 @@ func TestGenerateMosaicVideo_EndToEnd(t *testing.T) {
 	if frame.Rows() < 400 {
 		t.Errorf("mosaic shorter than expected: %d rows", frame.Rows())
 	}
-	// A non-trivial fraction of the panorama should be non-black. We
-	// sample on a coarse grid and require at least 50% of samples to
-	// have any colour.
+	// A non-trivial fraction of the panorama should be non-black. The
+	// canvas legitimately has black corners where Y drift placed
+	// frames at varying y positions, so we use a low threshold —
+	// just enough to catch the historical "mostly-black mosaic" bug
+	// (<10% painted). 25% is comfortably above what bounded edge
+	// strips + Y drift produces on the short clip.
 	step := 16
 	nonBlack, total := 0, 0
 	for y := 0; y < frame.Rows(); y += step {
@@ -68,7 +71,7 @@ func TestGenerateMosaicVideo_EndToEnd(t *testing.T) {
 			}
 		}
 	}
-	if total == 0 || float64(nonBlack)/float64(total) < 0.5 {
+	if total == 0 || float64(nonBlack)/float64(total) < 0.25 {
 		t.Errorf("mosaic content sparse: %d/%d non-black samples", nonBlack, total)
 	}
 }

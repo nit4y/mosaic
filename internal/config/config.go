@@ -39,6 +39,15 @@ const (
 	// Stitching
 	MinimalPixelColumnIndex = 10 // Minimal column index for overlapping region
 
+	// EdgeStripWidth bounds the leading and trailing column strips
+	// painted from the first/last frames in StitchPanorama. Setting
+	// this to a small number (e.g. 64) keeps the edge contribution
+	// similar in width to a regular per-pair strip, instead of
+	// stretching frame 0 / frame n-1 across hundreds of canvas cols
+	// when frameXOffset is large. Cols outside this band stay black
+	// (= outside any frame's content), which produces a cleaner edge.
+	EdgeStripWidth = 64
+
 	// YTranslationDamping scales the per-pair vertical translation
 	// component (ty) of each homography before accumulation.
 	//   1.0 → keep ty as-is (preserve real vertical motion)
@@ -50,9 +59,14 @@ const (
 	// video.
 	YTranslationDamping = 1.0
 
-	// Output settings
-	OutputFPS             = 15 // Frames per second for output video
-	OutputLengthInSeconds = 1  // Length of output video in seconds
+	// Output settings.
+	// The output video runs forward (offset increasing) then backward
+	// (reversed) so it ping-pongs across the panorama's time slices,
+	// giving the static panorama some motion. The total frame count
+	// is OutputFPS * OutputLengthInSeconds; half are unique
+	// panoramas, half are the reversed copy.
+	OutputFPS             = 30 // Frames per second for output video
+	OutputLengthInSeconds = 2  // Length of output video in seconds
 	StartFrame            = 10 // First frame index to process
 
 	// I/O and concurrency

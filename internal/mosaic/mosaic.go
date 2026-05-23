@@ -750,24 +750,50 @@ func StitchPanorama(
 		prevLeftmostX = currLeftmostX
 	}
 
-	// Leading strip: paint canvas cols [0, firstLeftmostX+offset)
-	// from the first non-empty frame so the panorama's left edge
-	// isn't black even when frameXOffset shifts the regular strips
-	// far to the right (the offset can be > the panorama height for
-	// long videos because the Python reference linspaces it from
-	// MinimalPixelColumnIndex up to len(warpedFrames)).
+	// Leading strip: paint up to EdgeStripWidth cols immediately to
+	// the left of the first regular strip. We deliberately *don't*
+	// paint all the way to canvas col 0 — those cols are outside
+	// any frame's content and stretching frame 0 across them just
+	// produces a smeared edge.
 	if firstWarped != nil {
-		paintStrip(canvas, *firstWarped, 0, firstLeftmostX+frameXOffset)
+		lEnd := firstLeftmostX + frameXOffset
+		lStart := lEnd - config.EdgeStripWidth
+		if lStart < 0 {
+			lStart = 0
+		}
+		paintStrip(canvas, *firstWarped, lStart, lEnd)
 	}
-	// Tail strip: paint cols [prevLeftmostX+offset, canvas.Cols())
-	// from the last non-empty frame so the right edge is filled in
-	// the same way.
+	// Tail strip: paint up to EdgeStripWidth cols immediately to
+	// the right of the last regular strip.
 	if prevWarped != nil {
-		paintStrip(canvas, *prevWarped, prevLeftmostX+frameXOffset, canvas.Cols())
+		tStart := prevLeftmostX + frameXOffset
+		tEnd := tStart + config.EdgeStripWidth
+		if tEnd > canvas.Cols() {
+			tEnd = canvas.Cols()
+		}
+		paintStrip(canvas, *prevWarped, tStart, tEnd)
 	}
 
 	log.Info("Completed panorama stitching")
 	return canvas
+}
+
+// pingPongResJobs returns a slice of length 2*N that plays the input
+// forward then in reverse: [j_0, j_1, ..., j_{n-1}, j_{n-1}, ...,
+// j_1, j_0]. The reversed half shares gocv.Mat references with the
+// input — the caller must close each unique Mat exactly once after
+// writing. If the input is empty, returns nil.
+func pingPongResJobs(jobs []resJob) []resJob {
+	n := len(jobs)
+	if n == 0 {
+		return nil
+	}
+	out := make([]resJob, 0, 2*n)
+	out = append(out, jobs...)
+	for i := n - 1; i >= 0; i-- {
+		out = append(out, jobs[i])
+	}
+	return out
 }
 
 // GenerateVideoFromFrames converts a slice of Mats into an MP4 video file.
@@ -1098,8 +1124,17 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 	}
 	outputPath := filepath.Join(outputDir, outputName+".mp4")
 
-	selectedIndices := linspace(config.MinimalPixelColumnIndex, len(warpedFrames), config.OutputFPS*config.OutputLengthInSeconds)
-	log.Info("Selected indices for mosaic", "indices", selectedIndices)
+	// Generate half the requested frame count as unique panoramas;
+	// pingPongResJobs below doubles them so the output video plays
+	// forward then backward, matching the Python ref's
+	// panoramas + panoramas[::-1] pattern.
+	totalFrames := config.OutputFPS * config.OutputLengthInSeconds
+	uniquePanoramas := totalFrames / 2
+	if uniquePanoramas < 1 {
+		uniquePanoramas = 1
+	}
+	selectedIndices := linspace(config.MinimalPixelColumnIndex, len(warpedFrames), uniquePanoramas)
+	log.Info("Selected indices for mosaic", "indices", selectedIndices, "total_output_frames", totalFrames)
 
 	mosaics := make(chan resJob, len(selectedIndices))
 	jobsCh := make(chan int, len(selectedIndices))
@@ -1141,7 +1176,12 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 		return outputFrames[i].idx < outputFrames[j].idx
 	})
 
-	if err := GenerateVideoFromFrames(outputFrames, canvasHeight, canvasWidth, outputPath, config.OutputFPS); err != nil {
+	// Build the ping-pong sequence (forward then reversed). The
+	// reversed half shares Mat references with outputFrames, so the
+	// outer deferred Close still does the right thing — each
+	// underlying Mat is closed exactly once.
+	videoSeq := pingPongResJobs(outputFrames)
+	if err := GenerateVideoFromFrames(videoSeq, canvasHeight, canvasWidth, outputPath, config.OutputFPS); err != nil {
 		return fmt.Errorf("failed to save video: %w", err)
 	}
 

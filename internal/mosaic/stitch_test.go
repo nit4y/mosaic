@@ -4,6 +4,7 @@ import (
 	"image"
 	"testing"
 
+	"github.com/nit4y/go-panoramic-mosaic/internal/config"
 	"gocv.io/x/gocv"
 )
 
@@ -146,14 +147,12 @@ func TestStitchPanorama_RespectsFrameXOffset(t *testing.T) {
 	}
 }
 
-func TestStitchPanorama_LeadingStripFillsLeftWhenOffsetLarge(t *testing.T) {
-	// When frameXOffset is large (mimicking the Python reference's
-	// MINIMAL_PIXEL_COLUMN_INDEX..len(warped_frames) linspace, which
-	// for a long video can shift strips by hundreds of cols), the
-	// regular strips alone leave a gaping black wedge on the left.
-	// The leading strip must paint cols [0, L_0+offset) from the
-	// first non-empty frame.
-	canvasW, canvasH := 200, 10
+func TestStitchPanorama_LeadingStripBoundedByEdgeStripWidth(t *testing.T) {
+	// With a large frameXOffset, the leading strip must paint a
+	// bounded band of cols immediately to the left of the first
+	// regular strip — NOT all the way to canvas col 0. The
+	// configured bound is config.EdgeStripWidth.
+	canvasW, canvasH := 400, 10
 	frames := []gocv.Mat{
 		// Frame 0 spans cols [0, 60).
 		makeWarped(t, canvasW, canvasH, 0, 60, 90, 0, 0),
@@ -166,24 +165,60 @@ func TestStitchPanorama_LeadingStripFillsLeftWhenOffsetLarge(t *testing.T) {
 		}
 	}()
 
-	// Pick offset=30 so the first regular strip would start at col 30
-	// instead of col 0 → cols [0, 30) need the leading-strip fill.
-	out := StitchPanorama("lead", frames, canvasW, canvasH, 30)
+	const offset = 100
+	out := StitchPanorama("lead", frames, canvasW, canvasH, offset)
 	defer out.Close()
 
-	for x := 0; x < 30; x++ {
-		v := out.GetVecbAt(0, x)
-		if v[0] != 90 || v[1] != 0 || v[2] != 0 {
-			t.Errorf("leading-strip col %d: got %v, want frame 0 colour [90 0 0]", x, v)
+	leadEnd := 0 + offset // L_0 + offset
+	leadStart := leadEnd - config.EdgeStripWidth
+	// Far-left cols [0, leadStart) must remain black — we are NOT
+	// stretching frame 0 across them.
+	for x := 0; x < leadStart; x++ {
+		if columnSum(out, x) != 0 {
+			t.Errorf("col %d should remain black (outside edge band), got non-zero", x)
 			break
 		}
 	}
-	// Sanity: the regular strip (frame 0 between L_0+offset=30 and
-	// L_1+offset=50) should also be frame 0's colour.
-	for x := 30; x < 50; x++ {
+	// Cols inside the edge band but bounded by frame 0's actual
+	// content extent (frame 0 covers [0, 60), so cols [leadStart, 60)
+	// inside the band are painted; cols beyond 60 are black because
+	// frame 0 has no content there).
+	bandPaintMax := leadEnd
+	if 60 < bandPaintMax {
+		bandPaintMax = 60
+	}
+	for x := leadStart; x < bandPaintMax; x++ {
 		v := out.GetVecbAt(0, x)
 		if v[0] != 90 || v[1] != 0 {
-			t.Errorf("regular strip col %d: got %v, want frame 0 colour", x, v)
+			t.Errorf("col %d (leading band): got %v, want frame 0 colour", x, v)
+			break
+		}
+	}
+}
+
+func TestStitchPanorama_TrailingStripBoundedByEdgeStripWidth(t *testing.T) {
+	// Mirror of the leading test: trailing strip must paint at most
+	// EdgeStripWidth cols to the right of the last regular strip.
+	canvasW, canvasH := 400, 10
+	frames := []gocv.Mat{
+		makeWarped(t, canvasW, canvasH, 0, 60, 90, 0, 0),
+		makeWarped(t, canvasW, canvasH, 20, 60, 0, 90, 0),
+	}
+	defer func() {
+		for _, f := range frames {
+			f.Close()
+		}
+	}()
+	const offset = 0
+	out := StitchPanorama("tail", frames, canvasW, canvasH, offset)
+	defer out.Close()
+
+	trailStart := 20 + offset // L_1 + offset (frame 1's leftmost)
+	trailEnd := trailStart + config.EdgeStripWidth
+	// Cols past the band must be black.
+	for x := trailEnd; x < canvasW; x++ {
+		if columnSum(out, x) != 0 {
+			t.Errorf("col %d should remain black (past trailing band), got non-zero", x)
 			break
 		}
 	}
