@@ -44,17 +44,31 @@ func TestStitchPanorama_EmptyInput(t *testing.T) {
 	}
 }
 
-func TestStitchPanorama_FillsCanvasFromOverlappingFrames(t *testing.T) {
-	// Simulate a horizontal pan: each warped frame is 40 wide at the
-	// canvas, sliding right by 10 pixels. Canvas should be fully
-	// covered from col 0 to col 80 (frame 4's right edge).
+func TestStitchPanorama_PaintsExpectedColumnStrips(t *testing.T) {
+	// Simulate a horizontal pan with five frames, each 40px wide
+	// content sliding right by 10px. Leftmost columns:
+	//   frame 0 → 0,   frame 1 → 10, frame 2 → 20,
+	//   frame 3 → 30,  frame 4 → 40
+	// With frameXOffset=0 the column-strip algorithm should paint:
+	//   cols [0, 10)  from frame 0 (color A)
+	//   cols [10, 20) from frame 1 (color B)
+	//   cols [20, 30) from frame 2 (color C)
+	//   cols [30, 40) from frame 3 (color D)
+	//   cols [40, 80) from frame 4 (tail strip — frame 4 content
+	//                   extends to col 80, painted up to canvas edge)
+	//   cols [80, 100) black (outside any frame's content)
 	canvasW, canvasH := 100, 20
+	a := []uint8{100, 0, 0}
+	b := []uint8{0, 100, 0}
+	c := []uint8{0, 0, 100}
+	d := []uint8{200, 200, 0}
+	e := []uint8{0, 200, 200}
 	frames := []gocv.Mat{
-		makeWarped(t, canvasW, canvasH, 0, 40, 100, 0, 0),
-		makeWarped(t, canvasW, canvasH, 10, 40, 0, 100, 0),
-		makeWarped(t, canvasW, canvasH, 20, 40, 0, 0, 100),
-		makeWarped(t, canvasW, canvasH, 30, 40, 200, 200, 0),
-		makeWarped(t, canvasW, canvasH, 40, 40, 0, 200, 200),
+		makeWarped(t, canvasW, canvasH, 0, 40, a[0], a[1], a[2]),
+		makeWarped(t, canvasW, canvasH, 10, 40, b[0], b[1], b[2]),
+		makeWarped(t, canvasW, canvasH, 20, 40, c[0], c[1], c[2]),
+		makeWarped(t, canvasW, canvasH, 30, 40, d[0], d[1], d[2]),
+		makeWarped(t, canvasW, canvasH, 40, 40, e[0], e[1], e[2]),
 	}
 	defer func() {
 		for _, f := range frames {
@@ -62,42 +76,40 @@ func TestStitchPanorama_FillsCanvasFromOverlappingFrames(t *testing.T) {
 		}
 	}()
 
-	out := StitchPanorama("test", frames, canvasW, canvasH, 0)
+	out := StitchPanorama("strip", frames, canvasW, canvasH, 0)
 	defer out.Close()
 
-	// Every column in [0, 80) should have non-zero content because
-	// some frame covers it. The first frame (color (100,0,0)) wins at
-	// its overlap regions due to first-write-wins.
-	for x := 0; x < 80; x++ {
-		if columnSum(out, x) == 0 {
-			t.Errorf("column %d is fully black after stitching", x)
+	check := func(name string, x0, x1 int, want []uint8) {
+		for x := x0; x < x1; x++ {
+			v := out.GetVecbAt(0, x)
+			if v[0] != want[0] || v[1] != want[1] || v[2] != want[2] {
+				t.Errorf("%s col %d: got %v, want %v", name, x, v, want)
+				return
+			}
 		}
 	}
-	// First frame is the anchor in this call (frameOffset=0). It
-	// covers cols 0..40 fully. Within that range, every pixel should
-	// be the first frame's colour (100,0,0).
-	for x := 0; x < 40; x++ {
-		v := out.GetVecbAt(0, x)
-		if v[0] != 100 || v[1] != 0 || v[2] != 0 {
-			t.Errorf("col %d anchor region: got %v, want [100 0 0]", x, v)
-			break
-		}
-	}
-	// Columns 80..99 should still be black (no frame covered them).
+	check("frame0 strip", 0, 10, a)
+	check("frame1 strip", 10, 20, b)
+	check("frame2 strip", 20, 30, c)
+	check("frame3 strip", 30, 40, d)
+	check("frame4 tail strip", 40, 80, e)
+	// Cols 80..99 are outside any frame's content → still black.
 	for x := 80; x < canvasW; x++ {
 		if columnSum(out, x) != 0 {
-			t.Errorf("column %d should be black but has content", x)
+			t.Errorf("col %d should remain black, got non-zero sum", x)
 		}
 	}
 }
 
-func TestStitchPanorama_AnchorPriority(t *testing.T) {
-	// Two frames fully overlap at cols 20..60. With anchor=1 (second
-	// frame), its content should appear in the overlap.
-	canvasW, canvasH := 80, 10
+func TestStitchPanorama_RespectsFrameXOffset(t *testing.T) {
+	// With frameXOffset=5, every strip is shifted right by 5
+	// columns. Frame 0's strip moves from [0,10) → [5,15), etc. The
+	// leftmost 5 columns are unpainted (matching the Python
+	// reference's behavior).
+	canvasW, canvasH := 60, 10
 	frames := []gocv.Mat{
-		makeWarped(t, canvasW, canvasH, 20, 40, 50, 50, 50),
-		makeWarped(t, canvasW, canvasH, 20, 40, 200, 200, 200),
+		makeWarped(t, canvasW, canvasH, 0, 20, 80, 0, 0),
+		makeWarped(t, canvasW, canvasH, 10, 20, 0, 80, 0),
 	}
 	defer func() {
 		for _, f := range frames {
@@ -105,12 +117,31 @@ func TestStitchPanorama_AnchorPriority(t *testing.T) {
 		}
 	}()
 
-	out := StitchPanorama("anchor", frames, canvasW, canvasH, 1)
+	out := StitchPanorama("offset", frames, canvasW, canvasH, 5)
 	defer out.Close()
 
-	v := out.GetVecbAt(0, 30)
-	if v[0] != 200 || v[1] != 200 || v[2] != 200 {
-		t.Errorf("anchor frame should win overlap: got %v, want [200 200 200]", v)
+	// Cols [0, 5) unpainted, [5, 15) frame 0 (red-ish),
+	// [15, 25) frame 1 tail (green-ish).
+	for x := 0; x < 5; x++ {
+		if columnSum(out, x) != 0 {
+			t.Errorf("col %d should be black under offset shift, got non-zero", x)
+		}
+	}
+	for x := 5; x < 15; x++ {
+		v := out.GetVecbAt(0, x)
+		if v[0] != 80 || v[1] != 0 {
+			t.Errorf("col %d frame0 strip shifted: got %v", x, v)
+			break
+		}
+	}
+	// frame 1's tail strip extends from leftmost(10)+5=15 to canvas
+	// edge or frame 1 content edge (10+20=30). Both bound by 30.
+	for x := 15; x < 30; x++ {
+		v := out.GetVecbAt(0, x)
+		if v[0] != 0 || v[1] != 80 {
+			t.Errorf("col %d frame1 tail shifted: got %v", x, v)
+			break
+		}
 	}
 }
 

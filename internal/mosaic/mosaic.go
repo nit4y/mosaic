@@ -523,6 +523,86 @@ func TrimBlackBorders(img gocv.Mat, threshold uint8) gocv.Mat {
 	return cropped
 }
 
+// leftmostNonBlackColumn returns the x-coordinate of the leftmost
+// column in m that contains any non-black pixel, or -1 if the image
+// is entirely black. Implemented by collapsing rows with cv::reduce
+// (max) into a 1×W mask and scanning at most W bytes Go-side — much
+// faster than per-pixel BGR iteration over the whole frame.
+func leftmostNonBlackColumn(m gocv.Mat) int {
+	if m.Empty() {
+		return -1
+	}
+	gray := gocv.NewMat()
+	defer gray.Close()
+	if m.Channels() > 1 {
+		gocv.CvtColor(m, &gray, gocv.ColorBGRToGray)
+	} else {
+		m.CopyTo(&gray)
+	}
+
+	binary := gocv.NewMat()
+	defer binary.Close()
+	// Any non-zero gray pixel is treated as content. Matches the
+	// Python `sum(axis=2) > 0` check on warped frames produced by
+	// warpPerspective with BORDER_CONSTANT=0.
+	gocv.Threshold(gray, &binary, 0, 255, gocv.ThresholdBinary)
+
+	colMax := gocv.NewMat()
+	defer colMax.Close()
+	// dim=0 collapses rows → 1×W, taking max per column.
+	if err := gocv.Reduce(binary, &colMax, 0, gocv.ReduceMax, gocv.MatTypeCV8U); err != nil {
+		return -1
+	}
+
+	for x := 0; x < colMax.Cols(); x++ {
+		if colMax.GetUCharAt(0, x) != 0 {
+			return x
+		}
+	}
+	return -1
+}
+
+// paintStrip copies the vertical column-range [x1, x2) from src onto
+// dst at the same column range, masked by src's non-black pixels.
+// Used by StitchPanorama to splice one frame's contribution into the
+// panorama at its already-aligned position. Returns the number of
+// columns actually painted (after clamping); useful for tests.
+func paintStrip(dst, src gocv.Mat, x1, x2 int) int {
+	if x1 < 0 {
+		x1 = 0
+	}
+	if x2 > dst.Cols() {
+		x2 = dst.Cols()
+	}
+	if x2 > src.Cols() {
+		x2 = src.Cols()
+	}
+	if x2 <= x1 {
+		return 0
+	}
+	h := dst.Rows()
+	if src.Rows() < h {
+		h = src.Rows()
+	}
+
+	stripRect := image.Rect(x1, 0, x2, h)
+	srcRoi := src.Region(stripRect)
+	defer srcRoi.Close()
+	dstRoi := dst.Region(stripRect)
+	defer dstRoi.Close()
+
+	gray := gocv.NewMat()
+	defer gray.Close()
+	gocv.CvtColor(srcRoi, &gray, gocv.ColorBGRToGray)
+
+	mask := gocv.NewMat()
+	defer mask.Close()
+	gocv.Threshold(gray, &mask, 0, 255, gocv.ThresholdBinary)
+
+	srcRoi.CopyToWithMask(&dstRoi, mask)
+	return x2 - x1
+}
+
 // clampInt ensures v is between min and max (inclusive).
 func clampInt(v, min, max int) int {
 	if v < min {
@@ -535,34 +615,42 @@ func clampInt(v, min, max int) int {
 }
 
 // StitchPanorama composes a single panorama image from a sequence of
-// canvas-sized warped frames. Each warped frame contains the original
-// content placed at its aligned position with the surrounding area
-// black.
+// canvas-sized warped frames using the column-strip algorithm from
+// the Python reference implementation in ref/ex4.py.
 //
-// The algorithm paints frames in temporal order using a "first write
-// wins" mask: for each frame, any non-black pixel that lands on a
-// still-empty canvas pixel is copied. This guarantees the canvas is
-// filled across the full panorama extent (not just the differential
-// strips between consecutive frames) while leaving the earliest
-// available view of each region intact.
+// For each consecutive pair (prev, curr) we find the leftmost
+// non-black column of each (L_prev, L_curr) and paint the column
+// strip [L_prev+frameXOffset, L_curr+frameXOffset) of prev_warped
+// onto the canvas at the same column range. Because each warped
+// frame is already aligned to its target position on the canvas, the
+// strip lands exactly where it needs to be — no horizontal
+// accumulator, no overlay of full frames.
 //
-// frameOffset is the index of the frame to use as the "anchor" — that
-// frame is painted first (so its content takes priority where it
-// overlaps with others). Useful for dynamic mosaics where varying the
-// anchor frame over time produces a time-evolving panorama.
+// frameXOffset shifts which column slice of each frame contributes
+// to the panorama. For dynamic mosaics, varying frameXOffset across
+// the output sequence produces a time-evolving panorama. For static
+// mosaics it is typically a small constant (e.g.
+// config.MinimalPixelColumnIndex).
+//
+// Caveat (matches the Python reference): the trailing frame's strip
+// is intentionally not painted because there is no next frame to
+// bound it. We also paint a final tail strip from the last frame
+// using its full content width — this is a small, deliberate
+// extension over the Python so the rightmost ~frame_width of the
+// canvas isn't always black.
 func StitchPanorama(
 	videoName string,
 	warpedFrames []gocv.Mat,
 	canvasWidth,
 	canvasHeight,
-	frameOffset int,
+	frameXOffset int,
 ) gocv.Mat {
 	log := logger.WithVideo(videoName)
 	log.Info("Starting panorama stitching",
 		"frame_count", len(warpedFrames),
 		"canvas_width", canvasWidth,
 		"canvas_height", canvasHeight,
-		"frame_offset", frameOffset,
+		"frame_x_offset", frameXOffset,
 	)
 
 	canvas := gocv.NewMatWithSize(canvasHeight, canvasWidth, gocv.MatTypeCV8UC3)
@@ -572,52 +660,34 @@ func StitchPanorama(
 		return canvas
 	}
 
-	// Build a paint order. The anchor frame is painted first so its
-	// content "wins" in overlap regions, then the rest are painted in
-	// temporal order skipping the anchor.
-	anchor := clampInt(frameOffset, 0, len(warpedFrames)-1)
-	order := make([]int, 0, len(warpedFrames))
-	order = append(order, anchor)
+	var prevWarped *gocv.Mat
+	prevLeftmostX := 0
+
 	for i := range warpedFrames {
-		if i != anchor {
-			order = append(order, i)
-		}
-	}
-
-	// Tracks which canvas pixels have already been written.
-	filled := gocv.NewMatWithSize(canvasHeight, canvasWidth, gocv.MatTypeCV8U)
-	defer filled.Close()
-	filled.SetTo(gocv.NewScalar(0, 0, 0, 0))
-
-	for _, idx := range order {
-		warped := warpedFrames[idx]
+		warped := &warpedFrames[i]
 		if warped.Empty() {
 			continue
 		}
+		currLeftmostX := leftmostNonBlackColumn(*warped)
+		if currLeftmostX < 0 {
+			// frame is entirely black — skip without disturbing
+			// prev/cur tracking, so the next non-black frame still
+			// pairs with the right predecessor.
+			continue
+		}
 
-		gray := gocv.NewMat()
-		gocv.CvtColor(warped, &gray, gocv.ColorBGRToGray)
+		if prevWarped != nil {
+			paintStrip(canvas, *prevWarped, prevLeftmostX+frameXOffset, currLeftmostX+frameXOffset)
+		}
+		prevWarped = warped
+		prevLeftmostX = currLeftmostX
+	}
 
-		warpedMask := gocv.NewMat()
-		gocv.Threshold(gray, &warpedMask, 1, 255, gocv.ThresholdBinary)
-
-		notFilled := gocv.NewMat()
-		gocv.BitwiseNot(filled, &notFilled)
-
-		paintMask := gocv.NewMat()
-		gocv.BitwiseAnd(warpedMask, notFilled, &paintMask)
-
-		warped.CopyToWithMask(&canvas, paintMask)
-
-		// Mark these pixels as filled.
-		gocv.BitwiseOr(filled, paintMask, &filled)
-
-		gray.Close()
-		warpedMask.Close()
-		notFilled.Close()
-		paintMask.Close()
-
-		log.Debug("Stitched frame", "index", idx)
+	// Tail strip: paint the rightmost portion of the final non-black
+	// frame so the right edge of the canvas isn't black. The strip
+	// runs from prevLeftmostX+offset to the canvas right edge.
+	if prevWarped != nil {
+		paintStrip(canvas, *prevWarped, prevLeftmostX+frameXOffset, canvas.Cols())
 	}
 
 	log.Info("Completed panorama stitching")
