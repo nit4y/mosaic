@@ -5,7 +5,6 @@ import (
 	"math"
 
 	"github.com/nit4y/mosaic/internal/config"
-	"github.com/nit4y/mosaic/internal/logger"
 	"gocv.io/x/gocv"
 )
 
@@ -82,8 +81,8 @@ func detectCorners(gray gocv.Mat, maxCorners int, quality float64, minDist float
 // + Lucas-Kanade optical flow + RANSAC affine. Returns a 3×3
 // homogeneous Mat with horizontal-only motion (no rotation/skew, unit
 // scale, Y-damped per config) and the motion direction.
-func AlignImages(img1, img2 gocv.Mat, calcDirection bool) (*gocv.Mat, string) {
-	log := logger.WithOperation("align_images")
+func AlignImages(img1, img2 gocv.Mat, calcDirection bool, lg *Logger) (*gocv.Mat, string) {
+	log := lg.With("operation", "align_images")
 
 	// convert to grayscale
 	gray1 := gocv.NewMat()

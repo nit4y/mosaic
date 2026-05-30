@@ -4,13 +4,12 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/nit4y/mosaic/internal/logger"
 	"gocv.io/x/gocv"
 )
 
 // ExtractFrames extracts all frames from a video file and returns them as a slice of Mats.
-func ExtractFrames(videoPath string) ([]gocv.Mat, error) {
-	log := logger.WithVideo(filepath.Base(videoPath))
+func ExtractFrames(videoPath string, lg *Logger) ([]gocv.Mat, error) {
+	log := lg.With("video", filepath.Base(videoPath))
 	log.Info("Opening video file")
 
 	video, err := gocv.VideoCaptureFile(videoPath)
@@ -58,8 +57,8 @@ func ExtractFrames(videoPath string) ([]gocv.Mat, error) {
 }
 
 // GenerateVideoFromFrames converts a slice of Mats into an MP4 video file.
-func GenerateVideoFromFrames(images []resJob, outputPath string, fps int) error {
-	log := logger.WithOperation("create_video")
+func GenerateVideoFromFrames(images []resJob, outputPath string, fps int, lg *Logger) error {
+	log := lg.With("operation", "create_video")
 	if len(images) == 0 {
 		return fmt.Errorf("no frames to write to %s", outputPath)
 	}

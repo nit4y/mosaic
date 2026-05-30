@@ -93,7 +93,7 @@ func TestAlignImages_RecoversKnownTranslation(t *testing.T) {
 			img2 := shiftedCopy(img1, tc.dx, tc.dy)
 			defer img2.Close()
 
-			H, _ := AlignImages(img1, img2, false)
+			H, _ := AlignImages(img1, img2, false, nil)
 			if H == nil {
 				t.Fatal("AlignImages returned nil homography")
 			}
