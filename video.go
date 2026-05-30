@@ -7,8 +7,8 @@ import (
 	"gocv.io/x/gocv"
 )
 
-// ExtractFrames extracts all frames from a video file and returns them as a slice of Mats.
-func ExtractFrames(videoPath string, lg *Logger) ([]gocv.Mat, error) {
+// extractFrames extracts all frames from a video file and returns them as a slice of Mats.
+func extractFrames(videoPath string, lg *Logger) ([]gocv.Mat, error) {
 	log := lg.With("video", filepath.Base(videoPath))
 	log.Info("Opening video file")
 
@@ -31,11 +31,11 @@ func ExtractFrames(videoPath string, lg *Logger) ([]gocv.Mat, error) {
 
 	// Cap initial capacity to avoid huge allocations if the container
 	// reports a bogus frame count.
-	cap := frameCount
-	if cap < 0 || cap > 100000 {
-		cap = 0
+	capacity := frameCount
+	if capacity < 0 || capacity > 100000 {
+		capacity = 0
 	}
-	frames := make([]gocv.Mat, 0, cap)
+	frames := make([]gocv.Mat, 0, capacity)
 	frame := gocv.NewMat()
 	defer frame.Close()
 
@@ -56,8 +56,8 @@ func ExtractFrames(videoPath string, lg *Logger) ([]gocv.Mat, error) {
 	return frames, nil
 }
 
-// GenerateVideoFromFrames converts a slice of Mats into an MP4 video file.
-func GenerateVideoFromFrames(images []resJob, outputPath string, fps int, lg *Logger) error {
+// generateVideoFromFrames converts a slice of Mats into an MP4 video file.
+func generateVideoFromFrames(images []resJob, outputPath string, fps int, lg *Logger) error {
 	log := lg.With("operation", "create_video")
 	if len(images) == 0 {
 		return fmt.Errorf("no frames to write to %s", outputPath)

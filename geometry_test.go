@@ -47,9 +47,9 @@ func TestCalcMotionDirection(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := CalcMotionDirection(tc.pts1, tc.pts2)
+			got := calcMotionDirection(tc.pts1, tc.pts2)
 			if got != tc.wantDir {
-				t.Errorf("CalcMotionDirection() = %q, want %q", got, tc.wantDir)
+				t.Errorf("calcMotionDirection() = %q, want %q", got, tc.wantDir)
 			}
 		})
 	}
@@ -66,11 +66,11 @@ func TestToHomogeneous(t *testing.T) {
 	aff.SetDoubleAt(1, 1, 1.5)
 	aff.SetDoubleAt(1, 2, -20)
 
-	h := ToHomogeneous(aff)
+	h := toHomogeneous(aff)
 	defer h.Close()
 
 	if h.Rows() != 3 || h.Cols() != 3 {
-		t.Fatalf("ToHomogeneous result is %dx%d, want 3x3", h.Rows(), h.Cols())
+		t.Fatalf("toHomogeneous result is %dx%d, want 3x3", h.Rows(), h.Cols())
 	}
 	want := [3][3]float64{
 		{1.5, 0.0, 10},
@@ -81,7 +81,7 @@ func TestToHomogeneous(t *testing.T) {
 		for c := 0; c < 3; c++ {
 			got := h.GetDoubleAt(r, c)
 			if math.Abs(got-want[r][c]) > 1e-9 {
-				t.Errorf("ToHomogeneous[%d,%d] = %v, want %v", r, c, got, want[r][c])
+				t.Errorf("toHomogeneous[%d,%d] = %v, want %v", r, c, got, want[r][c])
 			}
 		}
 	}
@@ -109,7 +109,7 @@ func TestDampYTranslation(t *testing.T) {
 			m.SetDoubleAt(0, 2, 50) // tx — must remain unchanged
 			m.SetDoubleAt(1, 2, tc.ty)
 
-			out := DampYTranslation(m, tc.factor)
+			out := dampYTranslation(m, tc.factor)
 			if got := out.GetDoubleAt(1, 2); math.Abs(got-tc.want) > 1e-9 {
 				t.Errorf("ty: got %v, want %v", got, tc.want)
 			}
@@ -125,10 +125,10 @@ func TestDampYTranslation_EmptyMatNoCrash(t *testing.T) {
 	m := gocv.NewMat()
 	defer m.Close()
 	// Just ensuring no panic / no nil-deref on a content-empty mat.
-	_ = DampYTranslation(m, 0.5)
+	_ = dampYTranslation(m, 0.5)
 }
 
-func TestStablizeTranslation(t *testing.T) {
+func TestStabilizeTranslation(t *testing.T) {
 	// Start from a homogeneous matrix with scale and skew
 	h := gocv.NewMatWithSize(3, 3, gocv.MatTypeCV64F)
 	defer h.Close()
@@ -142,7 +142,7 @@ func TestStablizeTranslation(t *testing.T) {
 	h.SetDoubleAt(2, 1, 0)
 	h.SetDoubleAt(2, 2, 1)
 
-	out := StablizeTranslation(h, 1.0)
+	out := stabilizeTranslation(h, 1.0)
 	// stabilization should zero skew (0,1) and (1,0) and set diag to 1
 	if got := out.GetDoubleAt(0, 0); math.Abs(got-1.0) > 1e-9 {
 		t.Errorf("scale x = %v, want 1.0", got)
@@ -160,7 +160,7 @@ func TestStablizeTranslation(t *testing.T) {
 	if got := out.GetDoubleAt(0, 2); math.Abs(got-25) > 1e-9 {
 		t.Errorf("tx = %v, want 25", got)
 	}
-	// ty is scaled by the damping passed to StablizeTranslation (1.0 = no-op).
+	// ty is scaled by the damping passed to stabilizeTranslation (1.0 = no-op).
 	wantTy := -7 * 1.0
 	if got := out.GetDoubleAt(1, 2); math.Abs(got-wantTy) > 1e-9 {
 		t.Errorf("ty = %v, want %v (damped)", got, wantTy)

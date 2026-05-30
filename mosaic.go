@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"gocv.io/x/gocv"
@@ -42,18 +43,17 @@ func prettyPrintMatrix(mat gocv.Mat) string {
 	if rows == 0 || cols == 0 {
 		return "Empty matrix"
 	}
-	var result string
+	var b strings.Builder
 	for r := 0; r < rows; r++ {
 		for c := 0; c < cols; c++ {
-			val := mat.GetDoubleAt(r, c)
 			if c > 0 {
-				result += " "
+				b.WriteByte(' ')
 			}
-			result += fmt.Sprintf("%.2f", val)
+			fmt.Fprintf(&b, "%.2f", mat.GetDoubleAt(r, c))
 		}
-		result += "\n"
+		b.WriteByte('\n')
 	}
-	return result
+	return b.String()
 }
 
 // debugWritesEnabled returns true when MOSAIC_DEBUG_FRAMES is set. The
@@ -80,7 +80,7 @@ func GenerateMosaicVideo(videoPath, outputDir string, kind Kind, cfg Config, lg 
 	start := time.Now()
 
 	// Extract frames
-	frames, err := ExtractFrames(videoPath, lg)
+	frames, err := extractFrames(videoPath, lg)
 	if err != nil {
 		return fmt.Errorf("failed to extract frames: %w", err)
 	}
@@ -91,25 +91,25 @@ func GenerateMosaicVideo(videoPath, outputDir string, kind Kind, cfg Config, lg 
 		}
 	}()
 
-	// Trim black borders from all frames. The in-place assignment used
-	// to leak the original Mat every iteration.
+	// Trim black borders from all frames, replacing each Mat in place
+	// (replaceMat closes the original so it isn't leaked).
 	for i := range frames {
-		replaceMat(frames, i, TrimBlackBorders(frames[i], 10))
+		replaceMat(frames, i, trimBlackBorders(frames[i], 10))
 	}
 
 	// Detect and normalize motion direction
-	dir := DetectMotionDirection(frames, cfg, lg)
+	dir := detectMotionDirection(frames, cfg, lg)
 	log.Info("Detected motion direction", "direction", dir)
 	for i := range frames {
-		replaceMat(frames, i, RotateFrame(frames[i], dir))
+		replaceMat(frames, i, rotateFrame(frames[i], dir))
 	}
 
 	// Calculate transformations between consecutive frames
-	transforms, refIndex := CalculateTransformations(frames, cfg, lg)
+	transforms, refIndex := calculateTransformations(frames, cfg, lg)
 	log.Info("Calculated frame transformations", "reference_frame", refIndex)
 
 	// Calculate canvas size
-	canvasWidth, canvasHeight, frameXOffset, frameYOffset := CalculateCanvasSize(frames, transforms, refIndex, lg)
+	canvasWidth, canvasHeight, frameXOffset, frameYOffset := calculateCanvasSize(frames, transforms, refIndex, lg)
 	log.Info("Calculated canvas dimensions",
 		"width", canvasWidth,
 		"height", canvasHeight,
@@ -121,7 +121,7 @@ func GenerateMosaicVideo(videoPath, outputDir string, kind Kind, cfg Config, lg 
 	invTransforms := make([]*gocv.Mat, len(transforms))
 	for i, T := range transforms {
 		if T == nil || T.Empty() {
-			// CalculateTransformations leaves transforms[i] = nil for
+			// calculateTransformations leaves transforms[i] = nil for
 			// frames it couldn't align — propagate that nil through so
 			// downstream skips them instead of nil-derefing.
 			if T != nil {
@@ -162,9 +162,9 @@ func GenerateMosaicVideo(videoPath, outputDir string, kind Kind, cfg Config, lg 
 			return gocv.NewMat()
 		}
 		warped := gocv.NewMat()
-		// Bicubic resampling (was bilinear) reconstructs high-frequency
-		// texture — foliage, railings — with far less of the cross-hatch
-		// moiré bilinear leaves under a sub-pixel shift/rotation.
+		// Bicubic resampling reconstructs high-frequency texture (foliage,
+		// railings) with far less moiré than bilinear under a sub-pixel
+		// shift/rotation.
 		gocv.WarpPerspectiveWithParams(
 			frames[i],
 			&warped,
@@ -200,16 +200,20 @@ func GenerateMosaicVideo(videoPath, outputDir string, kind Kind, cfg Config, lg 
 	// Dynamic uses them all (played forward once).
 	totalFrames := cfg.OutputFPS * cfg.OutputLengthInSeconds
 	nPanoramas := panoramaCount(kind, totalFrames)
-	selectedIndices := linspace(cfg.MinimalPixelColumnIndex, len(warpedFrames), nPanoramas)
-	log.Info("Selected offsets for mosaic", "count", len(selectedIndices), "kind", kind)
+	// The sweep spans column offsets [MinimalPixelColumnIndex, len(frames)].
+	// The upper bound is the frame count by design: each frame contributes one
+	// strip, so the panorama is at most that many strip-columns wide, and one
+	// offset step per frame walks the brush across the full mosaic.
+	selectedOffsets := linspace(cfg.MinimalPixelColumnIndex, len(warpedFrames), nPanoramas)
+	log.Info("Selected offsets for mosaic", "count", len(selectedOffsets), "kind", kind)
 
 	// Stitch each offset into a panorama with bounded parallelism.
 	// parallelMap preserves offset order, so no post-sort is needed.
-	panoramas := parallelMap(len(selectedIndices), workers, func(i int) resJob {
-		offset := selectedIndices[i]
+	panoramas := parallelMap(len(selectedOffsets), workers, func(i int) resJob {
+		offset := selectedOffsets[i]
 		return resJob{
 			idx: offset,
-			mat: StitchPanorama(videoName, warpedFrames, canvasWidth, canvasHeight, offset, cfg, lg),
+			mat: stitchPanorama(videoName, warpedFrames, canvasWidth, canvasHeight, offset, cfg.FeatherWidth, lg),
 		}
 	})
 	defer func() {
@@ -218,6 +222,19 @@ func GenerateMosaicVideo(videoPath, outputDir string, kind Kind, cfg Config, lg 
 		}
 	}()
 
+	// The pipeline aligned and stitched everything in a rotated space where
+	// the pan runs horizontally (see rotateFrame above). Rotate each finished
+	// panorama back to the clip's original orientation before sequencing —
+	// without this, any non-left pan comes out mirrored (right) or sideways
+	// (up/down). Left needs no rotation, so skip the needless clone+close.
+	if dir != Left {
+		for i := range panoramas {
+			restored := rotateFrameBack(panoramas[i].mat, dir)
+			panoramas[i].mat.Close()
+			panoramas[i].mat = restored
+		}
+	}
+
 	// Turn the panoramas into the final frame sequence (static
 	// forward-reverse loop, or dynamic trim+pad played forward). cleanupSeq
 	// frees any Mats the builder allocated; the panoramas are freed by defer
@@ -225,7 +242,7 @@ func GenerateMosaicVideo(videoPath, outputDir string, kind Kind, cfg Config, lg 
 	videoSeq, cleanupSeq := buildSequence(panoramas, kind, cfg)
 	defer cleanupSeq()
 
-	if err := GenerateVideoFromFrames(videoSeq, outputPath, cfg.OutputFPS, lg); err != nil {
+	if err := generateVideoFromFrames(videoSeq, outputPath, cfg.OutputFPS, lg); err != nil {
 		return fmt.Errorf("failed to save video: %w", err)
 	}
 

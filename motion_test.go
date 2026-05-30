@@ -18,9 +18,9 @@ func TestRotateFrameRoundTrip(t *testing.T) {
 
 	for _, dir := range []Direction{Left, Right, Up, Down} {
 		t.Run(string(dir), func(t *testing.T) {
-			rotated := RotateFrame(src, dir)
+			rotated := rotateFrame(src, dir)
 			defer rotated.Close()
-			restored := RotateFrameBack(rotated, dir)
+			restored := rotateFrameBack(rotated, dir)
 			defer restored.Close()
 
 			if restored.Rows() != src.Rows() || restored.Cols() != src.Cols() {

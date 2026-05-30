@@ -7,9 +7,9 @@ import (
 	"gocv.io/x/gocv"
 )
 
-// ApplyBlur downscales the image by blurResolution, then upscales it back to
+// applyBlur downscales the image by blurResolution, then upscales it back to
 // its original size, producing a simple blur.
-func ApplyBlur(img gocv.Mat, blurResolution float64) gocv.Mat {
+func applyBlur(img gocv.Mat, blurResolution float64) gocv.Mat {
 	h := img.Rows()
 	w := img.Cols()
 
@@ -55,11 +55,11 @@ func detectCorners(gray gocv.Mat, maxCorners int, quality float64, minDist float
 	return pts, out
 }
 
-// AlignImages aligns img2 to img1 using Shi-Tomasi corner detection
+// alignImages aligns img2 to img1 using Shi-Tomasi corner detection
 // + Lucas-Kanade optical flow + RANSAC affine. Returns a 3×3
 // homogeneous Mat with horizontal-only motion (no rotation/skew, unit
 // scale, Y-damped per config) and the motion direction.
-func AlignImages(img1, img2 gocv.Mat, calcDirection bool, cfg Config, lg *Logger) (*gocv.Mat, Direction) {
+func alignImages(img1, img2 gocv.Mat, calcDirection bool, cfg Config, lg *Logger) (*gocv.Mat, Direction) {
 	log := lg.With("operation", "align_images")
 
 	// convert to grayscale
@@ -80,8 +80,8 @@ func AlignImages(img1, img2 gocv.Mat, calcDirection bool, cfg Config, lg *Logger
 	}
 
 	// blur for LK stability
-	b1 := ApplyBlur(gray1, cfg.BlurResolution)
-	b2 := ApplyBlur(gray2, cfg.BlurResolution)
+	b1 := applyBlur(gray1, cfg.BlurResolution)
+	b2 := applyBlur(gray2, cfg.BlurResolution)
 	defer b1.Close()
 	defer b2.Close()
 
@@ -141,7 +141,7 @@ func AlignImages(img1, img2 gocv.Mat, calcDirection bool, cfg Config, lg *Logger
 	// compute direction if needed
 	dir := Left
 	if calcDirection {
-		dir = CalcMotionDirection(valid1, valid2)
+		dir = calcMotionDirection(valid1, valid2)
 	}
 
 	if aff.Empty() || aff.Rows() < 2 || aff.Cols() < 3 {
@@ -153,10 +153,10 @@ func AlignImages(img1, img2 gocv.Mat, calcDirection bool, cfg Config, lg *Logger
 	}
 
 	// convert to homogeneous (Hh shares storage with H — they are the
-	// same Mat returned by StablizeTranslation, so we close it only on
+	// same Mat returned by stabilizeTranslation, so we close it only on
 	// the failure path).
-	H := ToHomogeneous(aff)
-	Hh := StablizeTranslation(H, cfg.YTranslationDamping)
+	H := toHomogeneous(aff)
+	Hh := stabilizeTranslation(H, cfg.YTranslationDamping)
 	if Hh.Empty() {
 		log.Error("Failed to stabilize horizontal motion - empty matrix")
 		Hh.Close()

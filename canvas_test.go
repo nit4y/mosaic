@@ -33,7 +33,7 @@ func TestCalculateCanvasSize_ExpandsBounds(t *testing.T) {
 	t2 := makeTransform(30, 0)
 	defer t2.Close()
 
-	w, h, xOff, yOff := CalculateCanvasSize(frames, []*gocv.Mat{t0, t1, t2}, 1, nil)
+	w, h, xOff, yOff := calculateCanvasSize(frames, []*gocv.Mat{t0, t1, t2}, 1, nil)
 
 	// width = (maxX - minX) + frameW = (30 - -10) + 100 = 140
 	if w != 140 {
@@ -69,7 +69,7 @@ func TestCalculateCanvasSize_BothNegativeAndPositiveY(t *testing.T) {
 	t2 := makeTransform(30, 8) // down
 	defer t2.Close()
 
-	_, h, _, yOff := CalculateCanvasSize(frames, []*gocv.Mat{t0, t1, t2}, 1, nil)
+	_, h, _, yOff := calculateCanvasSize(frames, []*gocv.Mat{t0, t1, t2}, 1, nil)
 	if h != 13+50 {
 		t.Errorf("canvas height = %d, want 63", h)
 	}
@@ -92,7 +92,7 @@ func TestCalculateCanvasSize_SkipsNilAndEmpty(t *testing.T) {
 	defer t2.Close()
 
 	transforms := []*gocv.Mat{t0, emptyPtr, t2}
-	w, _, xOff, _ := CalculateCanvasSize(frames, transforms, 1, nil)
+	w, _, xOff, _ := calculateCanvasSize(frames, transforms, 1, nil)
 
 	// minX = -20, maxX = 50 → width = 70 + 40 = 110.
 	if w != 110 {
@@ -113,7 +113,7 @@ func TestTrimBlackBorders_CropsToContent(t *testing.T) {
 	roi.SetTo(gocv.NewScalar(255, 255, 255, 0))
 	roi.Close()
 
-	cropped := TrimBlackBorders(img, 10)
+	cropped := trimBlackBorders(img, 10)
 	defer cropped.Close()
 	if cropped.Cols() != 10 || cropped.Rows() != 10 {
 		t.Errorf("cropped size = %dx%d, want 10x10", cropped.Cols(), cropped.Rows())
@@ -130,8 +130,8 @@ func TestTrimBlackBorders_ReturnsInputWhenAllBlack(t *testing.T) {
 	defer img.Close()
 	img.SetTo(gocv.NewScalar(0, 0, 0, 0))
 
-	cropped := TrimBlackBorders(img, 10)
-	// In the all-black case TrimBlackBorders returns the input Mat
+	cropped := trimBlackBorders(img, 10)
+	// In the all-black case trimBlackBorders returns the input Mat
 	// itself (no clone) — verify it has the original dimensions.
 	if cropped.Cols() != 30 || cropped.Rows() != 20 {
 		t.Errorf("all-black image size changed: got %dx%d, want 30x20",
@@ -144,10 +144,10 @@ func TestApplyBlur_PreservesDimensions(t *testing.T) {
 	defer src.Close()
 	src.SetTo(gocv.NewScalar(128, 0, 0, 0))
 
-	out := ApplyBlur(src, 0.5)
+	out := applyBlur(src, 0.5)
 	defer out.Close()
 	if out.Cols() != src.Cols() || out.Rows() != src.Rows() {
-		t.Errorf("ApplyBlur dims: got %dx%d, want %dx%d",
+		t.Errorf("applyBlur dims: got %dx%d, want %dx%d",
 			out.Cols(), out.Rows(), src.Cols(), src.Rows())
 	}
 }
