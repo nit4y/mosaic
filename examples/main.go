@@ -18,7 +18,7 @@ func main() {
 	//	cfg.Dynamic ... cfg.FeatherWidth = 4
 	cfg := mosaic.DefaultConfig()
 
-	// Generate a static (ping-pong) panoramic mosaic for every video in
+	// Generate a static (forward-reverse loop) panoramic mosaic for every video in
 	// cfg.InputDir, written under cfg.OutputDir/<video>/static.mp4.
 	//
 	// Dynamic ("video brush") mosaics are disabled by default. To produce

@@ -12,12 +12,12 @@ import (
 	"gocv.io/x/gocv"
 )
 
-// pingPongResJobs returns a slice of length 2*N that plays the input
+// forwardReverseLoop returns a slice of length 2*N that plays the input
 // forward then in reverse: [j_0, j_1, ..., j_{n-1}, j_{n-1}, ...,
-// j_1, j_0]. The reversed half shares gocv.Mat references with the
-// input — the caller must close each unique Mat exactly once after
-// writing. If the input is empty, returns nil.
-func pingPongResJobs(jobs []resJob) []resJob {
+// j_1, j_0], producing a seamless loop. The reversed half shares gocv.Mat
+// references with the input — the caller must close each unique Mat exactly
+// once after writing. If the input is empty, returns nil.
+func forwardReverseLoop(jobs []resJob) []resJob {
 	n := len(jobs)
 	if n == 0 {
 		return nil
@@ -196,8 +196,8 @@ func GenerateMosaicVideo(videoPath, outputDir string, kind Kind, cfg Config, lg 
 	outputPath := filepath.Join(outputDir, kind.String()+".mp4")
 
 	// Sweep a panorama at evenly-spaced column offsets. Static stitches
-	// half the frame count (ping-pong doubles it back); Dynamic uses them
-	// all (played forward once).
+	// half the frame count (the forward-reverse loop doubles it back);
+	// Dynamic uses them all (played forward once).
 	totalFrames := cfg.OutputFPS * cfg.OutputLengthInSeconds
 	nPanoramas := panoramaCount(kind, totalFrames)
 	selectedIndices := linspace(cfg.MinimalPixelColumnIndex, len(warpedFrames), nPanoramas)
@@ -218,9 +218,9 @@ func GenerateMosaicVideo(videoPath, outputDir string, kind Kind, cfg Config, lg 
 		}
 	}()
 
-	// Turn the panoramas into the final frame sequence (static ping-pong,
-	// or dynamic trim+pad played forward). cleanupSeq frees any Mats the
-	// builder allocated; the panoramas themselves are freed by the defer
+	// Turn the panoramas into the final frame sequence (static
+	// forward-reverse loop, or dynamic trim+pad played forward). cleanupSeq
+	// frees any Mats the builder allocated; the panoramas are freed by defer
 	// above.
 	videoSeq, cleanupSeq := buildSequence(panoramas, kind, cfg)
 	defer cleanupSeq()

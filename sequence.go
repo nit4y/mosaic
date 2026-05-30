@@ -11,7 +11,7 @@ type Kind int
 
 const (
 	// Static renders one panorama swept across column offsets and plays it
-	// forward then reversed (ping-pong) for a seamless loop.
+	// forward then reversed for a seamless loop.
 	Static Kind = iota
 
 	// Dynamic renders the swept panoramas and plays them forward once — a
@@ -31,7 +31,7 @@ func (k Kind) String() string {
 
 // panoramaCount returns how many unique panoramas to stitch for the given
 // kind so the final video has `total` frames. Static doubles its uniques
-// via ping-pong; Dynamic plays each frame once.
+// via the forward-reverse loop; Dynamic plays each frame once.
 func panoramaCount(kind Kind, total int) int {
 	if total < 1 {
 		total = 1
@@ -51,7 +51,8 @@ func panoramaCount(kind Kind, total int) int {
 // panorama is first cropped to the common content box so the output is
 // tight (no black margins) and uniform in size — an improvement over the
 // reference, which leaves the wedge/margin black in the frame. Static then
-// ping-pongs the cropped frames; Dynamic plays them forward once.
+// loops the cropped frames forward-then-reverse; Dynamic plays them forward
+// once.
 //
 // The input panoramas are not consumed (cropping copies out of them), so
 // the caller still owns and must close them.
@@ -65,9 +66,9 @@ func buildSequence(panoramas []resJob, kind Kind, cfg Config) (frames []resJob, 
 	if kind == Dynamic {
 		return cropped, cleanup
 	}
-	// Static: ping-pong shares the cropped Mats; cleanup still closes each
+	// Static: the loop shares the cropped Mats; cleanup still closes each
 	// unique Mat exactly once (it iterates `cropped`, not the doubled seq).
-	return pingPongResJobs(cropped), cleanup
+	return forwardReverseLoop(cropped), cleanup
 }
 
 // cropToCommonContent crops every panorama to the union of their non-black

@@ -123,9 +123,9 @@ func TestTightenToCoveredBand(t *testing.T) {
 	}
 }
 
-func TestBuildSequence_StaticIsPingPong(t *testing.T) {
+func TestBuildSequence_StaticLoopsForwardReverse(t *testing.T) {
 	// Fully-colored panoramas (no black), so cropping is a no-op and we can
-	// focus on the ping-pong ordering.
+	// focus on the forward-reverse ordering.
 	panoramas := []resJob{
 		{idx: 0, mat: solidMat(4, 4, 1, 0, 0)},
 		{idx: 1, mat: solidMat(4, 4, 2, 0, 0)},
