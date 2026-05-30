@@ -62,7 +62,12 @@ func detectMotionDirection(frames []gocv.Mat, cfg Config, lg *Logger) Direction 
 		limit = len(frames)
 	}
 	for i := 1; i < limit; i++ {
-		_, dir := alignImages(frames[0], frames[i], true, cfg, lg)
+		// We only need the direction here, but alignImages also returns a
+		// homography Mat — close it so it isn't leaked.
+		H, dir := alignImages(frames[0], frames[i], true, cfg, lg)
+		if H != nil {
+			H.Close()
+		}
 		votes[dir]++
 	}
 	// Pick the winner over a fixed candidate order so ties break
