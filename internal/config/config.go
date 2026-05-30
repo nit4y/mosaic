@@ -45,6 +45,17 @@ const (
 	// Default true: the target footage is a horizontal pan.
 	FlattenVertical = true
 
+	// FeatherWidth is the width in pixels of the linear cross-fade applied
+	// at each strip seam in StitchPanorama. Neighbouring strips come from
+	// different frames, so a hard seam exposes every sub-pixel
+	// misalignment as "tearing" — most visible in repetitive textures.
+	// Cross-fading the seam (the classic feather blend) hides it.
+	//   0      → hard seams (no blending)
+	//   ~4-8   → blends across a seam without noticeably softening detail
+	// Strips average a handful of pixels wide, so values much larger than
+	// the strip width simply turn the whole mosaic into a running blend.
+	FeatherWidth = 6
+
 	// YTranslationDamping scales the per-pair vertical translation (ty) of
 	// each homography inside AlignImages. 1.0 is a no-op and the normal
 	// value; it exists only as an advanced knob. Use FlattenVertical to

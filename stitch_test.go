@@ -37,7 +37,7 @@ func columnSum(m gocv.Mat, x int) int {
 }
 
 func TestStitchPanorama_EmptyInput(t *testing.T) {
-	out := StitchPanorama("t.mp4", nil, 100, 50, 0)
+	out := stitchPanorama("t.mp4", nil, 100, 50, 0, 0)
 	defer out.Close()
 	if out.Cols() != 100 || out.Rows() != 50 {
 		t.Fatalf("empty input: got %dx%d, want 100x50", out.Cols(), out.Rows())
@@ -77,7 +77,7 @@ func TestStitchPanorama_PaintsExpectedColumnStrips(t *testing.T) {
 		}
 	}()
 
-	out := StitchPanorama("strip", frames, canvasW, canvasH, 0)
+	out := stitchPanorama("strip", frames, canvasW, canvasH, 0, 0)
 	defer out.Close()
 
 	check := func(name string, x0, x1 int, want []uint8) {
@@ -117,7 +117,7 @@ func TestStitchPanorama_RespectsFrameXOffset(t *testing.T) {
 		}
 	}()
 
-	out := StitchPanorama("offset", frames, canvasW, canvasH, 5)
+	out := stitchPanorama("offset", frames, canvasW, canvasH, 5, 0)
 	defer out.Close()
 
 	// Cols [0, 5) black — no leading strip.
@@ -157,7 +157,7 @@ func TestStitchPanorama_HandlesEmptyMats(t *testing.T) {
 		}
 	}()
 
-	out := StitchPanorama("empty", frames, canvasW, canvasH, 0)
+	out := stitchPanorama("empty", frames, canvasW, canvasH, 0, 0)
 	defer out.Close()
 
 	// The empty mat is skipped, so the only pair is (frame0, frame2):
@@ -174,5 +174,48 @@ func TestStitchPanorama_HandlesEmptyMats(t *testing.T) {
 			t.Errorf("col %d should be black (frame2 is last), got non-zero", x)
 			break
 		}
+	}
+}
+
+func TestStitchPanorama_FeatherBlendsSeam(t *testing.T) {
+	// Two frames: f0 blue content [0,40), f1 red content [20,60). The seam
+	// sits at x=20; with feathering the band [20,20+feather) cross-fades
+	// blue -> red instead of switching hard.
+	canvasW, canvasH := 80, 10
+	f0 := makeWarped(t, canvasW, canvasH, 0, 40, 255, 0, 0) // blue (B,G,R)
+	f1 := makeWarped(t, canvasW, canvasH, 20, 40, 0, 0, 255) // red
+	frames := []gocv.Mat{f0, f1}
+	defer func() {
+		for _, f := range frames {
+			f.Close()
+		}
+	}()
+
+	const feather = 8
+	out := stitchPanorama("feather", frames, canvasW, canvasH, 0, feather)
+	defer out.Close()
+
+	// f0's opaque core (before the seam) stays pure blue.
+	if v := out.GetVecbAt(0, 5); v[0] != 255 || v[2] != 0 {
+		t.Errorf("f0 core col 5 = %v, want pure blue", v)
+	}
+	// Somewhere in the seam band both channels are non-zero — a genuine
+	// blend, not a hard edge.
+	mixed := false
+	for x := 20; x < 20+feather; x++ {
+		v := out.GetVecbAt(0, x)
+		if v[0] > 0 && v[2] > 0 {
+			mixed = true
+			break
+		}
+	}
+	if !mixed {
+		t.Error("seam band has no blended column; feather not applied")
+	}
+	// The cross-fade is monotone: blue falls and red rises across the band.
+	early := out.GetVecbAt(0, 21)
+	late := out.GetVecbAt(0, 26)
+	if !(early[0] >= late[0] && early[2] <= late[2]) {
+		t.Errorf("seam not monotone blue->red: x21=%v x26=%v", early, late)
 	}
 }

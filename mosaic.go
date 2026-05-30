@@ -670,6 +670,46 @@ func paintStrip(dst, src gocv.Mat, x1, x2 int) int {
 	return x2 - x1
 }
 
+// blendSeam linearly cross-fades the two warped frames `left` and `right`
+// across canvas columns [x0, x1): at the left edge the result is all
+// `left`, at the right edge all `right`. This softens the seam between two
+// neighbouring strips so small per-frame misalignments don't read as
+// tearing. Because the frames are Y-aligned, their content occupies the
+// same rows in the overlap, so a straight per-column weighted average is
+// correct (rows that are black in both stay black).
+func blendSeam(dst, left, right gocv.Mat, x0, x1 int) {
+	if x0 < 0 {
+		x0 = 0
+	}
+	x1 = clampInt(x1, x0, dst.Cols())
+	x1 = clampInt(x1, x0, left.Cols())
+	x1 = clampInt(x1, x0, right.Cols())
+	if x1 <= x0 {
+		return
+	}
+	h := dst.Rows()
+	if left.Rows() < h {
+		h = left.Rows()
+	}
+	if right.Rows() < h {
+		h = right.Rows()
+	}
+	n := x1 - x0
+	for x := x0; x < x1; x++ {
+		// t goes (0,1) across the band so the endpoints still lean fully
+		// toward their owning strip.
+		t := float64(x-x0+1) / float64(n+1)
+		rect := image.Rect(x, 0, x+1, h)
+		lc := left.Region(rect)
+		rc := right.Region(rect)
+		dc := dst.Region(rect)
+		gocv.AddWeighted(lc, 1-t, rc, t, 0, &dc)
+		lc.Close()
+		rc.Close()
+		dc.Close()
+	}
+}
+
 // clampInt ensures v is between min and max (inclusive).
 func clampInt(v, min, max int) int {
 	if v < min {
@@ -712,6 +752,21 @@ func StitchPanorama(
 	canvasHeight,
 	frameXOffset int,
 ) gocv.Mat {
+	return stitchPanorama(videoName, warpedFrames, canvasWidth, canvasHeight, frameXOffset, config.FeatherWidth)
+}
+
+// stitchPanorama is the core stitcher. `feather` is the seam cross-fade
+// width in pixels (0 = hard seams). It is exposed separately from the
+// public wrapper so tests can pin the feather rather than depend on the
+// configured default.
+func stitchPanorama(
+	videoName string,
+	warpedFrames []gocv.Mat,
+	canvasWidth,
+	canvasHeight,
+	frameXOffset int,
+	feather int,
+) gocv.Mat {
 	log := logger.WithVideo(videoName)
 	log.Info("Starting panorama stitching",
 		"frame_count", len(warpedFrames),
@@ -724,7 +779,10 @@ func StitchPanorama(
 	canvas.SetTo(gocv.NewScalar(0, 0, 0, 0))
 
 	var prevWarped *gocv.Mat
-	prevLeftmostX := 0
+	// prevSeam is the canvas column where the current "prev" frame's
+	// opaque strip begins; it starts after the previous seam's feather
+	// band so the cross-fade isn't overwritten.
+	prevSeam := 0
 
 	for i := range warpedFrames {
 		warped := &warpedFrames[i]
@@ -738,12 +796,21 @@ func StitchPanorama(
 			// pairs with the right predecessor.
 			continue
 		}
+		seam := currLeftmostX + frameXOffset
 
 		if prevWarped != nil {
-			paintStrip(canvas, *prevWarped, prevLeftmostX+frameXOffset, currLeftmostX+frameXOffset)
+			// Paint prev opaquely up to the seam, then cross-fade prev→curr
+			// over [seam, seam+feather). curr's own opaque strip begins
+			// after that band (next iteration), so the blend survives.
+			paintStrip(canvas, *prevWarped, prevSeam, seam)
+			if feather > 0 {
+				blendSeam(canvas, *prevWarped, *warped, seam, seam+feather)
+			}
+			prevSeam = seam + feather
+		} else {
+			prevSeam = seam
 		}
 		prevWarped = warped
-		prevLeftmostX = currLeftmostX
 	}
 
 	log.Info("Completed panorama stitching")
