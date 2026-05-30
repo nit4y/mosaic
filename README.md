@@ -91,10 +91,13 @@ LK / RANSAC / corner-detection parameters are exposed too — see the
 ## Development
 
 ```sh
-go test ./...          # unit + integration tests (needs OpenCV)
-go test -race ./...    # race detector
-golangci-lint run      # lint + format checks
+make test     # unit + integration tests (needs OpenCV)
+make race     # race detector
+make lint     # lint + format checks
+make check    # everything CI runs (fmt-check, vet, lint, race)
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and guidelines.
 
 ## License
 

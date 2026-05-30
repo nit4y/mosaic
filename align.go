@@ -32,8 +32,10 @@ func applyBlur(img gocv.Mat, blurResolution float64) gocv.Mat {
 }
 
 // detectCorners returns trackable Shi-Tomasi corners (GoodFeaturesToTrack)
-// from a grayscale image as a slice of points plus the N×1 CV_32FC2 Mat
-// that calcOpticalFlowPyrLK expects.
+// from a grayscale image as a slice of points plus the N×1 CV_32FC2 Mat that
+// calcOpticalFlowPyrLK expects. GoodFeaturesToTrack already produces exactly
+// that Mat layout, so it is returned directly (the caller owns and closes it);
+// the point slice is a parallel copy for the direction/inlier bookkeeping.
 func detectCorners(gray gocv.Mat, maxCorners int, quality float64, minDist float64) ([]gocv.Point2f, gocv.Mat) {
 	corners := gocv.NewMat()
 	if err := gocv.GoodFeaturesToTrack(gray, &corners, maxCorners, quality, minDist); err != nil {
@@ -42,24 +44,21 @@ func detectCorners(gray gocv.Mat, maxCorners int, quality float64, minDist float
 	}
 	n := corners.Rows()
 	pts := make([]gocv.Point2f, n)
-	out := gocv.NewMatWithSize(n, 1, gocv.MatTypeCV32FC2)
 	for i := 0; i < n; i++ {
-		// GoodFeaturesToTrack returns Nx1 CV_32FC2; each entry is
-		// (x, y) as a 2-float vector.
+		// Each entry of the Nx1 CV_32FC2 Mat is (x, y) as a 2-float vector.
 		v := corners.GetVecfAt(i, 0)
 		pts[i] = gocv.Point2f{X: v[0], Y: v[1]}
-		out.SetFloatAt(i, 0, v[0])
-		out.SetFloatAt(i, 1, v[1])
 	}
-	corners.Close()
-	return pts, out
+	return pts, corners
 }
 
-// alignImages aligns img2 to img1 using Shi-Tomasi corner detection
-// + Lucas-Kanade optical flow + RANSAC affine. Returns a 3×3
-// homogeneous Mat with horizontal-only motion (no rotation/skew, unit
-// scale, Y-damped per config) and the motion direction.
-func alignImages(img1, img2 gocv.Mat, calcDirection bool, cfg Config, lg *Logger) (*gocv.Mat, Direction) {
+// alignImages aligns img2 to img1 using Shi-Tomasi corner detection +
+// Lucas-Kanade optical flow + RANSAC affine. On success it returns a 3×3
+// homogeneous Mat with horizontal-only motion (no rotation/skew, unit scale,
+// Y-damped per config) and the motion direction. On failure it returns an
+// empty Mat (check with Mat.Empty); the returned Mat is always owned by the
+// caller and must be closed.
+func alignImages(img1, img2 gocv.Mat, calcDirection bool, cfg Config, lg *Logger) (gocv.Mat, Direction) {
 	log := lg.With("operation", "align_images")
 
 	// convert to grayscale
@@ -76,7 +75,7 @@ func alignImages(img1, img2 gocv.Mat, calcDirection bool, cfg Config, lg *Logger
 	defer prevPtsMat.Close()
 	if len(ptsList) == 0 {
 		log.Error("No corners detected in gray1")
-		return nil, Left
+		return gocv.NewMat(), Left
 	}
 
 	// blur for LK stability
@@ -149,18 +148,17 @@ func alignImages(img1, img2 gocv.Mat, calcDirection bool, cfg Config, lg *Logger
 			"empty", aff.Empty(),
 			"rows", aff.Rows(),
 			"cols", aff.Cols())
-		return nil, dir
+		return gocv.NewMat(), dir
 	}
 
-	// convert to homogeneous (Hh shares storage with H — they are the
-	// same Mat returned by stabilizeTranslation, so we close it only on
-	// the failure path).
+	// stabilizeTranslation mutates and returns the same Mat produced by
+	// toHomogeneous, so H and Hh alias one another; close it only on failure.
 	H := toHomogeneous(aff)
 	Hh := stabilizeTranslation(H, cfg.YTranslationDamping)
 	if Hh.Empty() {
 		log.Error("Failed to stabilize horizontal motion - empty matrix")
 		Hh.Close()
-		return nil, dir
+		return gocv.NewMat(), dir
 	}
-	return &Hh, dir
+	return Hh, dir
 }
