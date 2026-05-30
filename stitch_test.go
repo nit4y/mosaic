@@ -4,7 +4,7 @@ import (
 	"image"
 	"testing"
 
-	"github.com/nit4y/go-panoramic-mosaic/internal/config"
+	"github.com/nit4y/mosaic/internal/config"
 	"gocv.io/x/gocv"
 )
 

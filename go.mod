@@ -1,4 +1,4 @@
-module github.com/nit4y/go-panoramic-mosaic
+module github.com/nit4y/mosaic
 
 go 1.22
 
