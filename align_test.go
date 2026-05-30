@@ -93,7 +93,12 @@ func TestAlignImages_RecoversKnownTranslation(t *testing.T) {
 			img2 := shiftedCopy(img1, tc.dx, tc.dy)
 			defer img2.Close()
 
-			H, _ := alignImages(img1, img2, false, DefaultConfig(), nil)
+			// This case checks raw translation recovery, so keep the vertical
+			// translation undamped (YTranslationDamping=1.0) regardless of the
+			// configured default — otherwise the recovered ty would be scaled.
+			cfg := DefaultConfig()
+			cfg.YTranslationDamping = 1.0
+			H, _ := alignImages(img1, img2, false, cfg, nil)
 			if H.Empty() {
 				t.Fatal("alignImages returned an empty homography")
 			}
