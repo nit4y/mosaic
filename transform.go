@@ -4,14 +4,13 @@ import (
 	"math"
 
 	"github.com/nit4y/mosaic/internal/config"
-	"github.com/nit4y/mosaic/internal/logger"
 	"gocv.io/x/gocv"
 )
 
 // CalculateTransformations computes cumulative homographies aligning each frame
 // to the middle (reference) frame, then recenters them by the median vertical shift.
-func CalculateTransformations(frames []gocv.Mat) ([]*gocv.Mat, int) {
-	log := logger.WithOperation("calculate_transformations")
+func CalculateTransformations(frames []gocv.Mat, lg *Logger) ([]*gocv.Mat, int) {
+	log := lg.With("operation", "calculate_transformations")
 	n := len(frames)
 	log.Info("Starting transformation calculations", "frame_count", n)
 
@@ -35,7 +34,7 @@ func CalculateTransformations(frames []gocv.Mat) ([]*gocv.Mat, int) {
 	// 4) accumulate to the right of refIdx
 	accum := id.Clone() // running product
 	for i := refIdx + 1; i < n; i++ {
-		H, _ := AlignImages(frames[i-1], frames[i], true)
+		H, _ := AlignImages(frames[i-1], frames[i], true, lg)
 		if H == nil || H.Empty() {
 			log.Error("Failed to align frames for right side", "i", i)
 			if H != nil {
@@ -63,7 +62,7 @@ func CalculateTransformations(frames []gocv.Mat) ([]*gocv.Mat, int) {
 	// 5) accumulate to the left of refIdx
 	accum = id.Clone()
 	for i := refIdx - 1; i >= 0; i-- {
-		H, _ := AlignImages(frames[i+1], frames[i], false)
+		H, _ := AlignImages(frames[i+1], frames[i], false, lg)
 		if H == nil || H.Empty() {
 			log.Error("Failed to align frames for left side", "i", i)
 			if H != nil {
@@ -109,8 +108,8 @@ func CalculateTransformations(frames []gocv.Mat) ([]*gocv.Mat, int) {
 	return transforms, refIdx
 }
 
-func CalculateCanvasSize(frames []gocv.Mat, transforms []*gocv.Mat, refIndex int) (int, int, int, int) {
-	log := logger.WithOperation("calculate_canvas_size")
+func CalculateCanvasSize(frames []gocv.Mat, transforms []*gocv.Mat, refIndex int, lg *Logger) (int, int, int, int) {
+	log := lg.With("operation", "calculate_canvas_size")
 	log.Info("Calculating canvas dimensions", "reference_frame", refIndex)
 
 	// Get dimensions of the first frame

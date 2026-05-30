@@ -1,22 +1,30 @@
 package main
 
 import (
+	"log/slog"
+	"os"
+
 	"github.com/nit4y/mosaic"
-	"github.com/nit4y/mosaic/internal/logger"
 )
 
 func main() {
+	// The caller owns the logger. Wrap any *slog.Logger with the desired
+	// verbosity via NewLogger and hand it to the library. Pass nil — or
+	// verbose=false — to silence the library entirely.
+	slogger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	lg := mosaic.NewLogger(slogger, true) // verbose: emit pipeline logs
+
 	// Generate a static (ping-pong) panoramic mosaic for every video in
 	// the "input" directory, written under "output/<video>/static.mp4".
 	//
 	// Dynamic ("video brush") mosaics are disabled by default. To produce
 	// them, call:
 	//
-	//	mosaic.GenerateVideosFromDir("input", "output", mosaic.Dynamic)
-	if err := mosaic.GenerateVideos(); err != nil {
-		logger.Log.Error("Failed to generate static mosaics", "error", err)
+	//	mosaic.GenerateVideosFromDir("input", "output", mosaic.Dynamic, lg)
+	if err := mosaic.GenerateVideos(lg); err != nil {
+		slogger.Error("failed to generate static mosaics", "error", err)
 		return
 	}
 
-	logger.Log.Info("All mosaics generated successfully")
+	slogger.Info("all mosaics generated successfully")
 }
