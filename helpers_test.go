@@ -64,10 +64,10 @@ func TestClampInt(t *testing.T) {
 
 func TestCalcMotionDirection(t *testing.T) {
 	cases := []struct {
-		name     string
-		pts1     []gocv.Point2f
-		pts2     []gocv.Point2f
-		wantDir  string
+		name    string
+		pts1    []gocv.Point2f
+		pts2    []gocv.Point2f
+		wantDir string
 	}{
 		{
 			name:    "empty defaults to left",
@@ -219,40 +219,6 @@ func TestStablizeTranslation(t *testing.T) {
 	wantTy := -7 * config.YTranslationDamping
 	if got := out.GetDoubleAt(1, 2); math.Abs(got-wantTy) > 1e-9 {
 		t.Errorf("ty = %v, want %v (damped)", got, wantTy)
-	}
-}
-
-func TestLinspaceChan(t *testing.T) {
-	cases := []struct {
-		name  string
-		start int
-		stop  int
-		count int
-		want  []int
-	}{
-		{"empty", 0, 10, 0, []int{}},
-		{"single", 5, 5, 1, []int{5}},
-		{"endpoints", 0, 10, 11, []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
-		{"three", 0, 10, 3, []int{0, 5, 10}},
-		{"two", 0, 10, 2, []int{0, 10}},
-		{"start equals stop with count", 7, 7, 3, []int{7, 7, 7}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := []int{}
-			for v := range LinspaceChan(tc.start, tc.stop, tc.count) {
-				got = append(got, v)
-			}
-			if len(got) != len(tc.want) {
-				t.Fatalf("LinspaceChan(%d,%d,%d) length = %d, want %d (got %v)",
-					tc.start, tc.stop, tc.count, len(got), len(tc.want), got)
-			}
-			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Errorf("LinspaceChan[%d] = %d, want %d", i, got[i], tc.want[i])
-				}
-			}
-		})
 	}
 }
 

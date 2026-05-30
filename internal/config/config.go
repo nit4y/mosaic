@@ -7,96 +7,126 @@ import (
 )
 
 const (
-	// Harris corner detector parameters
-	HarrisBlockSize    = 7    // Neighborhood size
-	HarrisApertureSize = 9    // Aperture parameter for Sobel
-	HarrisK            = 0.05 // Harris detector free parameter
-
-	// Lucas-Kanade optical flow
-	BlurResolution = 0.5 // Downscale factor for images
+	// BlurResolution is the downscale factor applied before Lucas-Kanade
+	// optical flow. Tracking is more stable on a slightly blurred image.
+	BlurResolution = 0.5
 
 	// RANSAC parameters for estimateAffinePartial2D in AlignImages.
-	// Defaults match OpenCV's Python defaults (the reference uses
-	// them implicitly): confidence 0.99, ~2000 iterations.
-	// The previous values (0.5 confidence, 100 iterations) let RANSAC
-	// converge on poor estimates because half-confidence is the same
-	// as a coin flip — a major source of jittery / "off"
-	// transformations between frame pairs.
+	// Defaults match OpenCV's Python defaults: confidence 0.99, ~2000
+	// iterations. Lower confidence lets RANSAC converge on poor estimates
+	// and was a major source of jittery transforms between frame pairs.
 	RansacThreshold     = 1    // px reprojection error threshold for inliers
-	RansacConfidence    = 0.99 // Probability the estimate is correct
-	RansacMaxIterations = 2000 // Max RANSAC iterations
+	RansacConfidence    = 0.99 // probability the estimate is correct
+	RansacMaxIterations = 2000 // max RANSAC iterations
 	RansacFlag          = 0
 
-	// Corner detection (GoodFeaturesToTrack / Shi-Tomasi).
-	// These feed into Lucas-Kanade optical flow and then RANSAC; more
-	// well-distributed corners produce a more robust translation
-	// estimate. Tuned by trial on input/boat.mp4 — the prior ORB
-	// detector with 500 features produced visibly off transforms.
+	// Corner detection (GoodFeaturesToTrack / Shi-Tomasi). These feed
+	// Lucas-Kanade optical flow and then RANSAC; more well-distributed
+	// corners produce a more robust translation estimate.
 	MaxCorners    = 2000 // upper bound on detected corners per frame
 	CornerQuality = 0.01 // minimum corner quality (1% of max response)
 	CornerMinDist = 7    // px min distance between detected corners
 
-	// Stitching
-	MinimalPixelColumnIndex = 10 // Minimal column index for overlapping region
+	// MinimalPixelColumnIndex is the first column offset swept when
+	// stitching panoramas (skips the extreme edge where alignment is
+	// weakest).
+	MinimalPixelColumnIndex = 10
 
-	// EdgeStripWidth bounds the leading and trailing column strips
-	// painted from the first/last frames in StitchPanorama. Setting
-	// this to a small number (e.g. 64) keeps the edge contribution
-	// similar in width to a regular per-pair strip, instead of
-	// stretching frame 0 / frame n-1 across hundreds of canvas cols
-	// when frameXOffset is large. Cols outside this band stay black
-	// (= outside any frame's content), which produces a cleaner edge.
-	EdgeStripWidth = 64
+	// FlattenVertical controls the panorama's vertical layout, applied once
+	// to the accumulated transforms (not to per-pair alignment, which must
+	// keep recovering true translation).
+	//   true  → zero the accumulated vertical translation, so every frame
+	//           sits in one horizontal band. Keeps the canvas ~one frame
+	//           tall instead of staircasing into the diagonal black wedges
+	//           that give the output its "smeared edge" look (see
+	//           scripts/compare_mosaics.sh vs the flattened school ref).
+	//   false → re-center frames on the median vertical drift, preserving
+	//           genuine vertical camera motion (taller, wedge-prone canvas).
+	// Default false: preserve real vertical motion so strips stay aligned
+	// vertically; the diagonal black wedges this can introduce are bounded
+	// by the content-box crop in buildSequence. Set true to force a flat,
+	// single-band panorama for purely horizontal pans.
+	FlattenVertical = false
 
-	// YTranslationDamping scales the per-pair vertical translation
-	// component (ty) of each homography before accumulation.
-	//   1.0 → keep ty as-is (preserve real vertical motion)
-	//   0.0 → fully remove ty (panorama stays at a constant y)
-	// Default 1.0 preserves the camera's Y motion, so the canvas
-	// height spans the true (maxY - minY) range and frame strips
-	// land at their correct y indentation. Set lower if accumulated
-	// per-pair ty noise is dominating real motion in a particular
-	// video.
+	// FeatherWidth is the width in pixels of the linear cross-fade applied
+	// at each strip seam in StitchPanorama. Neighbouring strips come from
+	// different frames, so a hard seam exposes every sub-pixel
+	// misalignment as "tearing" — most visible in repetitive textures.
+	// Cross-fading the seam (the classic feather blend) hides it.
+	//   0      → hard seams (no blending)
+	//   ~2-8   → light-to-moderate cross-fade (2 is the default: just
+	//            enough to take the edge off seams without softening detail)
+	// Strips average a handful of pixels wide, so values much larger than
+	// the strip width simply turn the whole mosaic into a running blend.
+	FeatherWidth = 2
+
+	// CropToCoveredBand enables cropping the output vertically to the band
+	// of rows that are well-covered in every panorama, removing the
+	// diagonal black wedges that FlattenVertical=false leaves. Disabled by
+	// default: the output keeps its full content bounding box (wedges and
+	// all). Enable it for a tight, wedge-free band.
+	CropToCoveredBand = false
+
+	// CoverageThreshold is the minimum fraction of non-black pixels a row
+	// must have (across each panorama's content width) to be kept when
+	// CropToCoveredBand is enabled. 1.0 demands fully-opaque rows; lower
+	// values tolerate small gaps. If no row clears the bar we fall back to
+	// the bounding box (no vertical crop).
+	CoverageThreshold = 0.97
+
+	// YTranslationDamping scales the per-pair vertical translation (ty) of
+	// each homography inside AlignImages. 1.0 is a no-op and the normal
+	// value; it exists only as an advanced knob. Use FlattenVertical to
+	// control panorama vertical layout — that is the right layer for it.
 	YTranslationDamping = 1.0
 
-	// Output settings.
-	// The output video runs forward (offset increasing) then backward
-	// (reversed) so it ping-pongs across the panorama's time slices,
-	// giving the static panorama some motion. The total frame count
-	// is OutputFPS * OutputLengthInSeconds; half are unique
-	// panoramas, half are the reversed copy.
-	OutputFPS             = 30 // Frames per second for output video
-	OutputLengthInSeconds = 4  // Length of output video in seconds (split as 2s forward + 2s reversed)
-	StartFrame            = 10 // First frame index to process
+	// Output settings. Total output frames = OutputFPS * OutputLengthInSeconds.
+	OutputFPS             = 30
+	OutputLengthInSeconds = 4
 
-	// I/O and concurrency
-	InputDir           = "input"
-	OutputDir          = "my_output"
+	// I/O
+	InputDir = "input"
+
+	// Concurrency guardrails.
+	//
+	// MaxWorkers caps the goroutines used by any single parallel stage
+	// (frame warping, panorama stitching). 0 = auto (runtime.NumCPU()).
+	// This is the CPU guardrail.
+	MaxWorkers = 0
+
+	// VideoConcurrency caps how many videos are processed at once. Each
+	// in-flight video holds many large Mats, so the default is 1
+	// (sequential = lightest on memory). Raise it to trade RAM for
+	// throughput when processing a directory of clips. This is the
+	// across-video memory guardrail.
+	VideoConcurrency = 1
+
+	// ProcessPoolWorkers / StitcherWorkers are the legacy per-stage worker
+	// counts, kept until those stages are migrated onto MaxWorkers.
 	ProcessPoolWorkers = 4
-	ThreadPoolWorkers  = 2
+	StitcherWorkers    = 4
 
-	StitcherWorkers = 4
-
-	// Directions
+	// Motion directions.
 	Left  = "left"
 	Right = "right"
 	Up    = "up"
 	Down  = "down"
-
-	// Strategies
-	DocsImagesStrategy = "docs_images"
-	VideosStrategy     = "videos"
 )
 
 var (
-	// Lucas-Kanade parameters
-	LKWinSize         = image.Pt(15, 15)
-	LKMaxLevel        = 2
-	LKCriteria        = gocv.NewTermCriteria(gocv.Count|gocv.EPS, 10, 0.03)
+	// Lucas-Kanade optical flow parameters, tuned for tracking accuracy
+	// (which directly feeds the RANSAC rotation/translation estimate):
+	//   - WinSize 21×21 (was 15): a larger window averages over more
+	//     texture, stabilising flow on busy regions like foliage where a
+	//     small window latches onto aliasing and produces noisy vectors.
+	//   - MaxLevel 3 (was 2): an extra pyramid level tracks the larger
+	//     frame-to-frame motion of a pan without losing the fine level.
+	//   - Criteria 30 iters / 0.01 eps (was 10 / 0.03): lets each point
+	//     converge to sub-pixel accuracy instead of stopping early, which
+	//     tightens the affine fit and reduces seam ghosting.
+	LKWinSize         = image.Pt(21, 21)
+	LKMaxLevel        = 3
+	LKCriteria        = gocv.NewTermCriteria(gocv.Count|gocv.EPS, 30, 0.01)
 	LKFlags           = 0
 	LKMinEigThreshold = 1e-4
-	LKBlurKernelSize  = image.Pt(5, 5)
-
-	// Dynamic mosaics video filenames
-	DynamicMosaics = []string{"Trees.mp4", "Iguazu.mp4"}
 )

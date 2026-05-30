@@ -11,6 +11,9 @@
 # Test binary, built with `go test -c`
 *.test
 
+# Go debugger (Delve / VS Code) binaries
+__debug_bin*
+
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
 
@@ -27,10 +30,10 @@ go.work.sum
 .vscode
 
 *.mp4
-!internal/mosaic/testdata/*.mp4
+!testdata/*.mp4
 
 *.jpg
-!internal/mosaic/testdata/*.jpg
+!testdata/*.jpg
 
 gocv
 install_deps.sh

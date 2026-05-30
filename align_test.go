@@ -18,8 +18,8 @@ func makeTexturedFrame(t *testing.T) gocv.Mat {
 
 	// A few colored blocks at varying positions = corners for tracking.
 	blocks := []struct {
-		x, y, w, h    int
-		b, g, r       uint8
+		x, y, w, h int
+		b, g, r    uint8
 	}{
 		{20, 30, 40, 30, 20, 200, 20},
 		{90, 50, 25, 25, 200, 20, 20},
