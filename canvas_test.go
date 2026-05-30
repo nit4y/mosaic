@@ -33,7 +33,7 @@ func TestCalculateCanvasSize_ExpandsBounds(t *testing.T) {
 	t2 := makeTransform(30, 0)
 	defer t2.Close()
 
-	w, h, xOff, yOff := CalculateCanvasSize(frames, []*gocv.Mat{t0, t1, t2}, 1)
+	w, h, xOff, yOff := CalculateCanvasSize(frames, []*gocv.Mat{t0, t1, t2}, 1, nil)
 
 	// width = (maxX - minX) + frameW = (30 - -10) + 100 = 140
 	if w != 140 {
@@ -69,7 +69,7 @@ func TestCalculateCanvasSize_BothNegativeAndPositiveY(t *testing.T) {
 	t2 := makeTransform(30, 8) // down
 	defer t2.Close()
 
-	_, h, _, yOff := CalculateCanvasSize(frames, []*gocv.Mat{t0, t1, t2}, 1)
+	_, h, _, yOff := CalculateCanvasSize(frames, []*gocv.Mat{t0, t1, t2}, 1, nil)
 	if h != 13+50 {
 		t.Errorf("canvas height = %d, want 63", h)
 	}
@@ -92,7 +92,7 @@ func TestCalculateCanvasSize_SkipsNilAndEmpty(t *testing.T) {
 	defer t2.Close()
 
 	transforms := []*gocv.Mat{t0, emptyPtr, t2}
-	w, _, xOff, _ := CalculateCanvasSize(frames, transforms, 1)
+	w, _, xOff, _ := CalculateCanvasSize(frames, transforms, 1, nil)
 
 	// minX = -20, maxX = 50 → width = 70 + 40 = 110.
 	if w != 110 {

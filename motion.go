@@ -49,7 +49,7 @@ func RotateFrameBack(frame gocv.Mat, direction string) gocv.Mat {
 }
 
 // DetectMotionDirection detects the dominant motion direction in a video.
-func DetectMotionDirection(frames []gocv.Mat) string {
+func DetectMotionDirection(frames []gocv.Mat, lg *Logger) string {
 	// vote with motion of first 5 frames relative to the first frame
 	votes := map[string]int{
 		config.Left:  0,
@@ -63,7 +63,7 @@ func DetectMotionDirection(frames []gocv.Mat) string {
 		limit = len(frames)
 	}
 	for i := 1; i < limit; i++ {
-		_, dir := AlignImages(frames[0], frames[i], true)
+		_, dir := AlignImages(frames[0], frames[i], true, lg)
 		votes[dir]++
 	}
 	// find direction with highest votes

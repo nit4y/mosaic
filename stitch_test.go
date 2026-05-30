@@ -37,7 +37,7 @@ func columnSum(m gocv.Mat, x int) int {
 }
 
 func TestStitchPanorama_EmptyInput(t *testing.T) {
-	out := stitchPanorama("t.mp4", nil, 100, 50, 0, 0)
+	out := stitchPanorama("t.mp4", nil, 100, 50, 0, 0, nil)
 	defer out.Close()
 	if out.Cols() != 100 || out.Rows() != 50 {
 		t.Fatalf("empty input: got %dx%d, want 100x50", out.Cols(), out.Rows())
@@ -77,7 +77,7 @@ func TestStitchPanorama_PaintsExpectedColumnStrips(t *testing.T) {
 		}
 	}()
 
-	out := stitchPanorama("strip", frames, canvasW, canvasH, 0, 0)
+	out := stitchPanorama("strip", frames, canvasW, canvasH, 0, 0, nil)
 	defer out.Close()
 
 	check := func(name string, x0, x1 int, want []uint8) {
@@ -117,7 +117,7 @@ func TestStitchPanorama_RespectsFrameXOffset(t *testing.T) {
 		}
 	}()
 
-	out := stitchPanorama("offset", frames, canvasW, canvasH, 5, 0)
+	out := stitchPanorama("offset", frames, canvasW, canvasH, 5, 0, nil)
 	defer out.Close()
 
 	// Cols [0, 5) black — no leading strip.
@@ -157,7 +157,7 @@ func TestStitchPanorama_HandlesEmptyMats(t *testing.T) {
 		}
 	}()
 
-	out := stitchPanorama("empty", frames, canvasW, canvasH, 0, 0)
+	out := stitchPanorama("empty", frames, canvasW, canvasH, 0, 0, nil)
 	defer out.Close()
 
 	// The empty mat is skipped, so the only pair is (frame0, frame2):
@@ -192,7 +192,7 @@ func TestStitchPanorama_FeatherBlendsSeam(t *testing.T) {
 	}()
 
 	const feather = 8
-	out := stitchPanorama("feather", frames, canvasW, canvasH, 0, feather)
+	out := stitchPanorama("feather", frames, canvasW, canvasH, 0, feather, nil)
 	defer out.Close()
 
 	// f0's opaque core (before the seam) stays pure blue.
