@@ -1033,12 +1033,15 @@ func GenerateMosaicVideo(videoPath, outputDir string, kind Kind) error {
 			return gocv.NewMat()
 		}
 		warped := gocv.NewMat()
+		// Bicubic resampling (was bilinear) reconstructs high-frequency
+		// texture — foliage, railings — with far less of the cross-hatch
+		// moiré bilinear leaves under a sub-pixel shift/rotation.
 		gocv.WarpPerspectiveWithParams(
 			frames[i],
 			&warped,
 			*transforms[i],
 			image.Pt(canvasWidth, canvasHeight),
-			gocv.InterpolationLinear,
+			gocv.InterpolationCubic,
 			gocv.BorderConstant,
 			color.RGBA{0, 0, 0, 0},
 		)

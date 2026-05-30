@@ -85,10 +85,19 @@ const (
 )
 
 var (
-	// Lucas-Kanade optical flow parameters.
-	LKWinSize         = image.Pt(15, 15)
-	LKMaxLevel        = 2
-	LKCriteria        = gocv.NewTermCriteria(gocv.Count|gocv.EPS, 10, 0.03)
+	// Lucas-Kanade optical flow parameters, tuned for tracking accuracy
+	// (which directly feeds the RANSAC rotation/translation estimate):
+	//   - WinSize 21×21 (was 15): a larger window averages over more
+	//     texture, stabilising flow on busy regions like foliage where a
+	//     small window latches onto aliasing and produces noisy vectors.
+	//   - MaxLevel 3 (was 2): an extra pyramid level tracks the larger
+	//     frame-to-frame motion of a pan without losing the fine level.
+	//   - Criteria 30 iters / 0.01 eps (was 10 / 0.03): lets each point
+	//     converge to sub-pixel accuracy instead of stopping early, which
+	//     tightens the affine fit and reduces seam ghosting.
+	LKWinSize         = image.Pt(21, 21)
+	LKMaxLevel        = 3
+	LKCriteria        = gocv.NewTermCriteria(gocv.Count|gocv.EPS, 30, 0.01)
 	LKFlags           = 0
 	LKMinEigThreshold = 1e-4
 )
