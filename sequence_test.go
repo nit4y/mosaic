@@ -186,3 +186,17 @@ func TestBuildSequence_DynamicCropsForward(t *testing.T) {
 		t.Errorf("dynamic frame0 (0,0) = %v, want black margin", v)
 	}
 }
+
+func TestCommonContentRect_NoFrames(t *testing.T) {
+	if got := commonContentRect(nil); got != image.Rect(0, 0, 1, 1) {
+		t.Errorf("commonContentRect(nil) = %v, want 1x1 fallback", got)
+	}
+}
+
+func TestRowCoverage_EmptyMat(t *testing.T) {
+	empty := gocv.NewMat()
+	defer empty.Close()
+	if got := rowCoverage(empty); got != nil {
+		t.Errorf("rowCoverage(empty) = %v, want nil", got)
+	}
+}

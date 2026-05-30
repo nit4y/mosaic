@@ -44,3 +44,9 @@ func TestExtractFrames_BadPath(t *testing.T) {
 		f.Close()
 	}
 }
+
+func TestGenerateVideoFromFrames_Empty(t *testing.T) {
+	if err := GenerateVideoFromFrames(nil, filepath.Join(t.TempDir(), "x.mp4"), 30, nil); err == nil {
+		t.Error("expected error for empty frame list, got nil")
+	}
+}

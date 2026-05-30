@@ -142,3 +142,16 @@ func TestListVideoFilesIgnoresNonVideos(t *testing.T) {
 		}
 	}
 }
+
+func TestGenerateVideosFromDir_BadInputDir(t *testing.T) {
+	err := GenerateVideosFromDir(filepath.Join(t.TempDir(), "does-not-exist"), t.TempDir(), Static, DefaultConfig(), nil)
+	if err == nil {
+		t.Error("expected error for unreadable input dir, got nil")
+	}
+}
+
+func TestListVideoFiles_BadDir(t *testing.T) {
+	if _, err := listVideoFiles(filepath.Join(t.TempDir(), "nope")); err == nil {
+		t.Error("expected error listing a non-existent dir, got nil")
+	}
+}

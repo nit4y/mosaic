@@ -215,7 +215,7 @@ func TestStitchPanorama_FeatherBlendsSeam(t *testing.T) {
 	// The cross-fade is monotone: blue falls and red rises across the band.
 	early := out.GetVecbAt(0, 21)
 	late := out.GetVecbAt(0, 26)
-	if !(early[0] >= late[0] && early[2] <= late[2]) {
+	if early[0] < late[0] || early[2] > late[2] {
 		t.Errorf("seam not monotone blue->red: x21=%v x26=%v", early, late)
 	}
 }
@@ -357,4 +357,15 @@ func TestPaintStrip_ClampsToBounds(t *testing.T) {
 	if got := paintStrip(dst, src, 7, 3); got != 0 {
 		t.Errorf("inverted range: painted %d, want 0", got)
 	}
+}
+
+func TestBlendSeam_ClampsOutOfRange(t *testing.T) {
+	dst := makeWarped(t, 30, 10, 0, 30, 10, 10, 10)
+	left := makeWarped(t, 30, 10, 0, 30, 200, 0, 0)
+	right := makeWarped(t, 30, 10, 0, 30, 0, 0, 200)
+	defer dst.Close()
+	defer left.Close()
+	defer right.Close()
+	// Out-of-range bounds must be clamped, not panic.
+	blendSeam(dst, left, right, -5, 1000)
 }

@@ -1,0 +1,31 @@
+version: "2"
+
+# Standard linters (errcheck, govet, ineffassign, staticcheck, unused) are
+# on by default; we add misspell and enforce gofmt/goimports formatting.
+linters:
+  enable:
+    - misspell
+  settings:
+    errcheck:
+      exclude-functions:
+        # Close on gocv handles returns an error conventionally ignored
+        # during cleanup (defer ...Close()).
+        - (*gocv.io/x/gocv.Mat).Close
+        - (*gocv.io/x/gocv.VideoCapture).Close
+        - (*gocv.io/x/gocv.VideoWriter).Close
+        - (*gocv.io/x/gocv.Point2fVector).Close
+        # In-place image ops whose error is not actionable mid-pipeline.
+        - (*gocv.io/x/gocv.Mat).CopyTo
+        - (*gocv.io/x/gocv.Mat).CopyToWithMask
+        - gocv.io/x/gocv.AddWeighted
+        - gocv.io/x/gocv.CalcOpticalFlowPyrLKWithParams
+        - gocv.io/x/gocv.CvtColor
+        - gocv.io/x/gocv.Gemm
+        - gocv.io/x/gocv.Resize
+        - gocv.io/x/gocv.Rotate
+        - gocv.io/x/gocv.WarpPerspectiveWithParams
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
