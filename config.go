@@ -24,7 +24,7 @@ type Config struct {
 	LKFlags           int
 	LKMinEigThreshold float64
 
-	// RANSAC parameters for estimateAffinePartial2D in AlignImages.
+	// RANSAC parameters for the partial-affine motion estimate during alignment.
 	RansacThreshold     int     // px reprojection error threshold for inliers
 	RansacConfidence    float64 // probability the estimate is correct
 	RansacMaxIterations int     // max RANSAC iterations
@@ -46,7 +46,7 @@ type Config struct {
 	FlattenVertical bool
 
 	// YTranslationDamping scales the per-pair vertical translation (ty) of
-	// each homography inside AlignImages. 1.0 is the normal no-op value;
+	// each homography during alignment. 1.0 is the normal no-op value;
 	// use FlattenVertical to control panorama vertical layout.
 	YTranslationDamping float64
 

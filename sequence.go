@@ -15,9 +15,7 @@ const (
 	Static Kind = iota
 
 	// Dynamic renders the swept panoramas and plays them forward once — a
-	// time-evolving "video brush" mosaic. This is the real dynamic path
-	// from the reference implementation (the old code only changed the
-	// output filename).
+	// time-evolving "video brush" mosaic.
 	Dynamic
 )
 
@@ -48,11 +46,9 @@ func panoramaCount(kind Kind, total int) int {
 
 // buildSequence turns stitched panoramas into the ordered frame sequence to
 // write, plus a cleanup func that releases the Mats it allocated. Every
-// panorama is first cropped to the common content box so the output is
-// tight (no black margins) and uniform in size — an improvement over the
-// reference, which leaves the wedge/margin black in the frame. Static then
-// loops the cropped frames forward-then-reverse; Dynamic plays them forward
-// once.
+// panorama is first cropped to the common content box so the output is tight
+// (no black margins) and uniform in size. Static then loops the cropped frames
+// forward-then-reverse; Dynamic plays them forward once.
 //
 // The input panoramas are not consumed (cropping copies out of them), so
 // the caller still owns and must close them.

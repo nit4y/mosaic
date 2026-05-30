@@ -6,18 +6,18 @@ import (
 	"gocv.io/x/gocv"
 )
 
-// StabilizeHorizontalMotion removes rotational components from a 3×3 transform,
+// stabilizeHorizontalMotion removes rotational components from a 3×3 transform,
 // preserving only horizontal translation.
-func StabilizeHorizontalMotion(matrix gocv.Mat) gocv.Mat {
+func stabilizeHorizontalMotion(matrix gocv.Mat) gocv.Mat {
 	// zero out rotational terms
 	matrix.SetDoubleAt(0, 1, 0)
 	matrix.SetDoubleAt(1, 0, 0)
 	return matrix
 }
 
-// StabilizeNoScale zeroes out any scale in rows 0 and 1 of a 3×3 matrix,
-// so after this call the diagonal entries are 1.0 (unit scale).
-func StabilizeScale(mat gocv.Mat) gocv.Mat {
+// stabilizeScale forces unit scale on a 3×3 matrix by setting both diagonal
+// entries [0,0] and [1,1] to 1.0.
+func stabilizeScale(mat gocv.Mat) gocv.Mat {
 	// set X scale to 1
 	mat.SetDoubleAt(0, 0, 1.0)
 	// set Y scale to 1
@@ -25,19 +25,19 @@ func StabilizeScale(mat gocv.Mat) gocv.Mat {
 	return mat
 }
 
-// StablizeTranslation reduces a homography to horizontal translation: it
+// stabilizeTranslation reduces a homography to horizontal translation: it
 // zeroes rotation, forces unit scale, and damps the vertical translation by
 // yDamping (1.0 = keep ty as-is, 0.0 = remove it).
-func StablizeTranslation(mat gocv.Mat, yDamping float64) gocv.Mat {
-	mat = StabilizeScale(StabilizeHorizontalMotion(mat))
-	return DampYTranslation(mat, yDamping)
+func stabilizeTranslation(mat gocv.Mat, yDamping float64) gocv.Mat {
+	mat = stabilizeScale(stabilizeHorizontalMotion(mat))
+	return dampYTranslation(mat, yDamping)
 }
 
-// DampYTranslation scales the ty component (element [1,2]) of a 3×3
+// dampYTranslation scales the ty component (element [1,2]) of a 3×3
 // affine homography by `factor`. factor=1.0 is a no-op; factor=0.0
 // removes vertical translation entirely. Mutates the input Mat in
 // place and returns it (consistent with the other stabilize helpers).
-func DampYTranslation(mat gocv.Mat, factor float64) gocv.Mat {
+func dampYTranslation(mat gocv.Mat, factor float64) gocv.Mat {
 	if mat.Empty() || mat.Rows() < 2 || mat.Cols() < 3 {
 		return mat
 	}
@@ -46,9 +46,9 @@ func DampYTranslation(mat gocv.Mat, factor float64) gocv.Mat {
 	return mat
 }
 
-// ToHomogeneous converts a 2×3 affine transformation Mat into a 3×3 homogeneous Mat.
+// toHomogeneous converts a 2×3 affine transformation Mat into a 3×3 homogeneous Mat.
 // affine must be a Mat of size 2×3.
-func ToHomogeneous(affine gocv.Mat) gocv.Mat {
+func toHomogeneous(affine gocv.Mat) gocv.Mat {
 	// Create a new 3×3 Mat with the same type as the affine input
 	dtype := affine.Type()
 	h := gocv.NewMatWithSize(3, 3, dtype)
@@ -69,9 +69,9 @@ func ToHomogeneous(affine gocv.Mat) gocv.Mat {
 	return h
 }
 
-// CalcMotionDirection estimates the dominant motion direction from two
+// calcMotionDirection estimates the dominant motion direction from two
 // corresponding slices of points.
-func CalcMotionDirection(pts1, pts2 []gocv.Point2f) Direction {
+func calcMotionDirection(pts1, pts2 []gocv.Point2f) Direction {
 	n := len(pts1)
 	if n == 0 {
 		return Left // default if no points

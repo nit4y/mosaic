@@ -28,7 +28,7 @@ per-frame strips:
 3. **Warp** — project every frame onto a shared canvas (bounded, parallel).
 4. **Stitch** — sweep a column offset across the aligned frames, painting the
    strip each frame contributes; optional feather-blending hides seams.
-5. **Sequence** — emit a **static** (forward + reverse ping-pong) or
+5. **Sequence** — emit a **static** (forward + reverse loop) or
    **dynamic** (forward "video brush") mosaic and write it as MP4.
 
 ## Requirements

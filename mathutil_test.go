@@ -18,9 +18,9 @@ func TestMedian(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := Median(tc.in)
+			got := median(tc.in)
 			if got != tc.want {
-				t.Errorf("Median(%v) = %v, want %v", tc.in, got, tc.want)
+				t.Errorf("median(%v) = %v, want %v", tc.in, got, tc.want)
 			}
 		})
 	}
@@ -29,7 +29,7 @@ func TestMedian(t *testing.T) {
 func TestMedianDoesNotMutateInput(t *testing.T) {
 	in := []float64{5, 2, 4, 1, 3}
 	cp := append([]float64(nil), in...)
-	_ = Median(in)
+	_ = median(in)
 	for i := range in {
 		if in[i] != cp[i] {
 			t.Fatalf("Median mutated input at %d: got %v want %v", i, in[i], cp[i])

@@ -71,7 +71,7 @@ func abs(x int) int {
 }
 
 // TestAlignImages_RecoversKnownTranslation moves a textured frame by
-// a known (dx, dy) and checks that AlignImages recovers a translation
+// a known (dx, dy) and checks that alignImages recovers a translation
 // within a small tolerance. This is the regression guard for the
 // RANSAC hyperparameter sweep — a too-loose RANSAC config drops the
 // translation estimate off by many pixels.
@@ -93,9 +93,9 @@ func TestAlignImages_RecoversKnownTranslation(t *testing.T) {
 			img2 := shiftedCopy(img1, tc.dx, tc.dy)
 			defer img2.Close()
 
-			H, _ := AlignImages(img1, img2, false, DefaultConfig(), nil)
+			H, _ := alignImages(img1, img2, false, DefaultConfig(), nil)
 			if H == nil {
-				t.Fatal("AlignImages returned nil homography")
+				t.Fatal("alignImages returned nil homography")
 			}
 			defer H.Close()
 
@@ -119,7 +119,7 @@ func TestAlignImages_NoCornersReturnsNil(t *testing.T) {
 	flat := gocv.NewMatWithSize(100, 100, gocv.MatTypeCV8UC3)
 	defer flat.Close()
 	flat.SetTo(gocv.NewScalar(128, 128, 128, 0)) // uniform → no trackable corners
-	H, dir := AlignImages(flat, flat, true, DefaultConfig(), nil)
+	H, dir := alignImages(flat, flat, true, DefaultConfig(), nil)
 	if H != nil {
 		H.Close()
 		t.Error("expected nil homography when no corners are found")

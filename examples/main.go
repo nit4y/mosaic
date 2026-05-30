@@ -15,7 +15,7 @@ func main() {
 	lg := mosaic.NewLogger(slogger, true) // verbose: emit pipeline logs
 
 	// Start from the tuned defaults and override only what you need, e.g.:
-	//	cfg.Dynamic ... cfg.FeatherWidth = 4
+	//	cfg.FeatherWidth = 4
 	cfg := mosaic.DefaultConfig()
 
 	// Generate a static (forward-reverse loop) panoramic mosaic for every video in

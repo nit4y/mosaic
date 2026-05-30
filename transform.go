@@ -6,9 +6,9 @@ import (
 	"gocv.io/x/gocv"
 )
 
-// CalculateTransformations computes cumulative homographies aligning each frame
+// calculateTransformations computes cumulative homographies aligning each frame
 // to the middle (reference) frame, then recenters them by the median vertical shift.
-func CalculateTransformations(frames []gocv.Mat, cfg Config, lg *Logger) ([]*gocv.Mat, int) {
+func calculateTransformations(frames []gocv.Mat, cfg Config, lg *Logger) ([]*gocv.Mat, int) {
 	log := lg.With("operation", "calculate_transformations")
 	n := len(frames)
 	log.Info("Starting transformation calculations", "frame_count", n)
@@ -33,7 +33,7 @@ func CalculateTransformations(frames []gocv.Mat, cfg Config, lg *Logger) ([]*goc
 	// 4) accumulate to the right of refIdx
 	accum := id.Clone() // running product
 	for i := refIdx + 1; i < n; i++ {
-		H, _ := AlignImages(frames[i-1], frames[i], true, cfg, lg)
+		H, _ := alignImages(frames[i-1], frames[i], true, cfg, lg)
 		if H == nil || H.Empty() {
 			log.Error("Failed to align frames for right side", "i", i)
 			if H != nil {
@@ -61,7 +61,7 @@ func CalculateTransformations(frames []gocv.Mat, cfg Config, lg *Logger) ([]*goc
 	// 5) accumulate to the left of refIdx
 	accum = id.Clone()
 	for i := refIdx - 1; i >= 0; i-- {
-		H, _ := AlignImages(frames[i+1], frames[i], false, cfg, lg)
+		H, _ := alignImages(frames[i+1], frames[i], false, cfg, lg)
 		if H == nil || H.Empty() {
 			log.Error("Failed to align frames for left side", "i", i)
 			if H != nil {
@@ -91,7 +91,7 @@ func CalculateTransformations(frames []gocv.Mat, cfg Config, lg *Logger) ([]*goc
 	// instead of staircasing into diagonal black wedges. With
 	// FlattenVertical=false we instead re-center on the median vertical
 	// drift, preserving genuine vertical motion.
-	median := Median(yTranslations)
+	medianY := median(yTranslations)
 	for _, Tptr := range transforms {
 		if Tptr == nil {
 			continue
@@ -99,7 +99,7 @@ func CalculateTransformations(frames []gocv.Mat, cfg Config, lg *Logger) ([]*goc
 		if cfg.FlattenVertical {
 			Tptr.SetDoubleAt(1, 2, 0)
 		} else {
-			Tptr.SetDoubleAt(1, 2, Tptr.GetDoubleAt(1, 2)-median)
+			Tptr.SetDoubleAt(1, 2, Tptr.GetDoubleAt(1, 2)-medianY)
 		}
 	}
 
@@ -107,7 +107,10 @@ func CalculateTransformations(frames []gocv.Mat, cfg Config, lg *Logger) ([]*goc
 	return transforms, refIdx
 }
 
-func CalculateCanvasSize(frames []gocv.Mat, transforms []*gocv.Mat, refIndex int, lg *Logger) (int, int, int, int) {
+// calculateCanvasSize returns the canvas width and height needed to hold every
+// transformed frame, plus the x/y offsets that shift the inverted transforms so
+// the leftmost/topmost frame lands at the canvas origin.
+func calculateCanvasSize(frames []gocv.Mat, transforms []*gocv.Mat, refIndex int, lg *Logger) (int, int, int, int) {
 	log := lg.With("operation", "calculate_canvas_size")
 	log.Info("Calculating canvas dimensions", "reference_frame", refIndex)
 
@@ -158,15 +161,10 @@ func CalculateCanvasSize(frames []gocv.Mat, transforms []*gocv.Mat, refIndex int
 	// plus one frame width/height.
 	canvasWidth := int(math.Ceil(maxX - minX + float64(width)))
 	canvasHeight := int(math.Ceil(maxY - minY + float64(height)))
-	// Offsets must shift INVERTED transforms (frame i → ref) so the
-	// leftmost/topmost frame lands at canvas origin (0, 0). Since
-	// inv(T_i).tx = -T_i.tx, the smallest inv.tx is -max(T_i.tx) =
-	// -maxX. To make that frame land at canvas col 0, we add +maxX
-	// as the X offset. (The earlier code used -minX, which placed
-	// the chronologically-last frame past the right edge of the
-	// canvas — empirically reproducible by inspecting warped frame
-	// dumps where the final frame came out entirely black.) Same
-	// logic applies to Y.
+	// Offsets shift the INVERTED transforms (frame i → ref) so the
+	// leftmost/topmost frame lands at the canvas origin (0, 0). Since
+	// inv(T_i).tx = -T_i.tx, the smallest inv.tx is -maxX; adding +maxX as
+	// the X offset moves that frame to column 0. Same logic for Y.
 	frameXOffset := int(math.Ceil(maxX))
 	frameYOffset := int(math.Ceil(maxY))
 	if frameXOffset < 0 {

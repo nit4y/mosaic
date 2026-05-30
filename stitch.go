@@ -6,8 +6,10 @@ import (
 	"gocv.io/x/gocv"
 )
 
-// TrimBlackBorders crops nearly black borders from an image and saves a debug crop.
-func TrimBlackBorders(img gocv.Mat, threshold uint8) gocv.Mat {
+// trimBlackBorders crops the nearly-black border around an image's content,
+// returning a fresh Mat. threshold is the grayscale value (0-255) below which
+// a pixel counts as black. If the image is entirely black it is returned as-is.
+func trimBlackBorders(img gocv.Mat, threshold uint8) gocv.Mat {
 	// convert to grayscale if needed
 	var gray gocv.Mat
 	if img.Channels() == 3 {
@@ -98,7 +100,7 @@ func leftmostNonBlackColumn(m gocv.Mat) int {
 
 // paintStrip copies the vertical column-range [x1, x2) from src onto
 // dst at the same column range, masked by src's non-black pixels.
-// Used by StitchPanorama to splice one frame's contribution into the
+// Used by stitchPanorama to splice one frame's contribution into the
 // panorama at its already-aligned position. Returns the number of
 // columns actually painted (after clamping); useful for tests.
 func paintStrip(dst, src gocv.Mat, x1, x2 int) int {
@@ -177,46 +179,25 @@ func blendSeam(dst, left, right gocv.Mat, x0, x1 int) {
 	}
 }
 
-// StitchPanorama composes a single panorama image from a sequence of
-// canvas-sized warped frames using the column-strip algorithm from
-// the Python reference implementation in ref/ex4.py.
+// stitchPanorama composes a single panorama image from a sequence of
+// canvas-sized warped frames using a column-strip algorithm.
 //
-// For each consecutive pair (prev, curr) we find the leftmost
-// non-black column of each (L_prev, L_curr) and paint the column
-// strip [L_prev+frameXOffset, L_curr+frameXOffset) of prev_warped
-// onto the canvas at the same column range. Because each warped
-// frame is already aligned to its target position on the canvas, the
-// strip lands exactly where it needs to be — no horizontal
-// accumulator, no overlay of full frames.
+// For each consecutive pair (prev, curr) it finds the leftmost non-black
+// column of each (L_prev, L_curr) and paints the column strip
+// [L_prev+frameXOffset, L_curr+frameXOffset) of prev onto the canvas at the
+// same column range. Each warped frame is already aligned to its target
+// position on the canvas, so the strip lands exactly where it belongs — no
+// horizontal accumulator, no full-frame overlay.
 //
-// frameXOffset shifts which column slice of each frame contributes
-// to the panorama. For dynamic mosaics, varying frameXOffset across
-// the output sequence produces a time-evolving panorama. For static
-// mosaics it is typically a small constant (e.g.
-// config.MinimalPixelColumnIndex).
+// frameXOffset shifts which column slice of each frame contributes to the
+// panorama: varying it across the output sequence produces a time-evolving
+// (dynamic) panorama; a small constant gives a static one.
 //
-// We paint NO synthetic leading/trailing strips. The old code stretched
-// the first/last frame across empty canvas to avoid black edges, which is
-// exactly what produced the visible edge smear. The black margins left
-// here (and the last frame's unpainted body) are removed downstream by
-// cropping every panorama to the common content box (see buildSequence),
-// giving clean rectangular edges instead of a smear.
-func StitchPanorama(
-	videoName string,
-	warpedFrames []gocv.Mat,
-	canvasWidth,
-	canvasHeight,
-	frameXOffset int,
-	cfg Config,
-	lg *Logger,
-) gocv.Mat {
-	return stitchPanorama(videoName, warpedFrames, canvasWidth, canvasHeight, frameXOffset, cfg.FeatherWidth, lg)
-}
-
-// stitchPanorama is the core stitcher. `feather` is the seam cross-fade
-// width in pixels (0 = hard seams). It is exposed separately from the
-// public wrapper so tests can pin the feather rather than depend on the
-// configured default.
+// No synthetic leading/trailing strips are painted, so the canvas keeps black
+// margins at the edges (and an unpainted last-frame body). Those are removed
+// downstream by cropping every panorama to the common content box (see
+// buildSequence). feather is the seam cross-fade width in pixels (0 = hard
+// seams).
 func stitchPanorama(
 	videoName string,
 	warpedFrames []gocv.Mat,

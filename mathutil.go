@@ -2,9 +2,9 @@ package mosaic
 
 import "sort"
 
-// Median returns the median value of the input slice.
+// median returns the median value of the input slice.
 // If the slice is empty, it returns 0.
-func Median(xs []float64) float64 {
+func median(xs []float64) float64 {
 	n := len(xs)
 	if n == 0 {
 		return 0
@@ -23,13 +23,14 @@ func Median(xs []float64) float64 {
 	return sorted[mid]
 }
 
-// clampInt ensures v is between min and max (inclusive).
-func clampInt(v, min, max int) int {
-	if v < min {
-		return min
+// clampInt ensures v is between lo and hi (inclusive). The parameters are
+// named lo/hi rather than min/max to avoid shadowing the Go builtins.
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
 	}
-	if v > max {
-		return max
+	if v > hi {
+		return hi
 	}
 	return v
 }

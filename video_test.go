@@ -8,9 +8,9 @@ import (
 const shortClip = "testdata/kitchen.mp4"
 
 func TestExtractFrames_ShortClip(t *testing.T) {
-	frames, err := ExtractFrames(shortClip, nil)
+	frames, err := extractFrames(shortClip, nil)
 	if err != nil {
-		t.Fatalf("ExtractFrames returned error: %v", err)
+		t.Fatalf("extractFrames returned error: %v", err)
 	}
 	defer func() {
 		for _, f := range frames {
@@ -36,7 +36,7 @@ func TestExtractFrames_ShortClip(t *testing.T) {
 func TestExtractFrames_BadPath(t *testing.T) {
 	// A path that points nowhere should produce an error, not a slice of
 	// frames from a silently-failed VideoCapture.
-	frames, err := ExtractFrames(filepath.Join("testdata", "does_not_exist.mp4"), nil)
+	frames, err := extractFrames(filepath.Join("testdata", "does_not_exist.mp4"), nil)
 	if err == nil {
 		t.Fatalf("expected error for missing file, got %d frames", len(frames))
 	}
@@ -46,7 +46,7 @@ func TestExtractFrames_BadPath(t *testing.T) {
 }
 
 func TestGenerateVideoFromFrames_Empty(t *testing.T) {
-	if err := GenerateVideoFromFrames(nil, filepath.Join(t.TempDir(), "x.mp4"), 30, nil); err == nil {
+	if err := generateVideoFromFrames(nil, filepath.Join(t.TempDir(), "x.mp4"), 30, nil); err == nil {
 		t.Error("expected error for empty frame list, got nil")
 	}
 }

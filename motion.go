@@ -2,8 +2,9 @@ package mosaic
 
 import "gocv.io/x/gocv"
 
-// RotateFrame rotates a frame to align motion to the right.
-func RotateFrame(frame gocv.Mat, direction Direction) gocv.Mat {
+// rotateFrame rotates a frame so the detected pan runs horizontally
+// (the orientation the alignment and stitching stages assume).
+func rotateFrame(frame gocv.Mat, direction Direction) gocv.Mat {
 	var rotated gocv.Mat
 	switch direction {
 	case Right:
@@ -24,8 +25,9 @@ func RotateFrame(frame gocv.Mat, direction Direction) gocv.Mat {
 	return rotated
 }
 
-// RotateFrameBack reverts rotation applied for alignment.
-func RotateFrameBack(frame gocv.Mat, direction Direction) gocv.Mat {
+// rotateFrameBack reverts the rotation applied by rotateFrame, returning a
+// frame (or finished panorama) to the clip's original orientation.
+func rotateFrameBack(frame gocv.Mat, direction Direction) gocv.Mat {
 	var original gocv.Mat
 	switch direction {
 	case Right:
@@ -45,8 +47,8 @@ func RotateFrameBack(frame gocv.Mat, direction Direction) gocv.Mat {
 	return original
 }
 
-// DetectMotionDirection detects the dominant motion direction in a video.
-func DetectMotionDirection(frames []gocv.Mat, cfg Config, lg *Logger) Direction {
+// detectMotionDirection detects the dominant motion direction in a video.
+func detectMotionDirection(frames []gocv.Mat, cfg Config, lg *Logger) Direction {
 	// vote with motion of first 5 frames relative to the first frame
 	votes := map[Direction]int{
 		Left:  0,
@@ -60,15 +62,17 @@ func DetectMotionDirection(frames []gocv.Mat, cfg Config, lg *Logger) Direction 
 		limit = len(frames)
 	}
 	for i := 1; i < limit; i++ {
-		_, dir := AlignImages(frames[0], frames[i], true, cfg, lg)
+		_, dir := alignImages(frames[0], frames[i], true, cfg, lg)
 		votes[dir]++
 	}
-	// find direction with highest votes
+	// Pick the winner over a fixed candidate order so ties break
+	// deterministically — ranging a map would randomise the result and make
+	// the whole pipeline non-reproducible.
 	bestDir := Left
 	maxVotes := -1
-	for dir, count := range votes {
-		if count > maxVotes {
-			maxVotes = count
+	for _, dir := range []Direction{Left, Right, Up, Down} {
+		if votes[dir] > maxVotes {
+			maxVotes = votes[dir]
 			bestDir = dir
 		}
 	}
