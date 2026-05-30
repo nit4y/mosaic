@@ -78,10 +78,12 @@ func buildSequence(panoramas []resJob, kind Kind) (frames []resJob, cleanup func
 // resizing or padding.
 func cropToCommonContent(panoramas []resJob) []resJob {
 	rect := commonContentRect(panoramas)
-	// Shrink the vertical extent to the rows covered across the full width
-	// in every frame, dropping the diagonal black wedges that vertical
-	// drift leaves inside the bounding box.
-	rect = tightenToCoveredBand(panoramas, rect)
+	// Optionally shrink the vertical extent to the rows covered across the
+	// full width in every frame, dropping the diagonal black wedges that
+	// vertical drift leaves inside the bounding box. Off by default.
+	if config.CropToCoveredBand {
+		rect = tightenToCoveredBand(panoramas, rect)
+	}
 	out := make([]resJob, len(panoramas))
 	for i, p := range panoramas {
 		view := p.mat.Region(rect)

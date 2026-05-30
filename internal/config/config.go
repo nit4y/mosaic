@@ -60,12 +60,16 @@ const (
 	// the strip width simply turn the whole mosaic into a running blend.
 	FeatherWidth = 2
 
+	// CropToCoveredBand enables cropping the output vertically to the band
+	// of rows that are well-covered in every panorama, removing the
+	// diagonal black wedges that FlattenVertical=false leaves. Disabled by
+	// default: the output keeps its full content bounding box (wedges and
+	// all). Enable it for a tight, wedge-free band.
+	CropToCoveredBand = false
+
 	// CoverageThreshold is the minimum fraction of non-black pixels a row
-	// must have (across the content width, in every panorama) to be kept
-	// when cropping the output. With FlattenVertical=false, vertical drift
-	// leaves diagonal black wedges above/below the content; the plain
-	// bounding box keeps them, so we additionally crop to the band of rows
-	// that are this well covered. 1.0 demands fully-opaque rows; lower
+	// must have (across each panorama's content width) to be kept when
+	// CropToCoveredBand is enabled. 1.0 demands fully-opaque rows; lower
 	// values tolerate small gaps. If no row clears the bar we fall back to
 	// the bounding box (no vertical crop).
 	CoverageThreshold = 0.97

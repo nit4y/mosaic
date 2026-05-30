@@ -170,16 +170,15 @@ func TestBuildSequence_DynamicCropsForward(t *testing.T) {
 	if len(frames) != 2 {
 		t.Fatalf("dynamic sequence len = %d, want 2", len(frames))
 	}
-	// Horizontal extent is the union of the content boxes (width 50). The
-	// vertical extent is the covered-band crop: frame0 covers rows 5..24,
-	// frame1 rows 0..14, so the rows covered in BOTH are 5..14 → height 10.
+	// Covered-band cropping is off by default, so frames are the union
+	// content box: width 50, height 25.
 	for i, f := range frames {
-		if f.mat.Cols() != 50 || f.mat.Rows() != 10 {
-			t.Errorf("frame %d: got %dx%d, want 50x10", i, f.mat.Cols(), f.mat.Rows())
+		if f.mat.Cols() != 50 || f.mat.Rows() != 25 {
+			t.Errorf("frame %d: got %dx%d, want 50x25", i, f.mat.Cols(), f.mat.Rows())
 		}
 	}
-	// Frame 0's white content (orig rect 10,5..30,25) is still present:
-	// cropped(5,10) maps back to orig(10,10) which is inside it.
+	// Frame 0's white content (orig rect 10,5..30,25) sits at the same
+	// place inside the cropped frame (crop origin is 0,0).
 	if v := frames[0].mat.GetVecbAt(5, 10); v[0] != 255 {
 		t.Errorf("dynamic frame0 (5,10) = %v, want white content", v)
 	}
