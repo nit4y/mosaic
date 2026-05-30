@@ -4,7 +4,6 @@ import (
 	"image"
 	"testing"
 
-	"github.com/nit4y/mosaic/internal/config"
 	"gocv.io/x/gocv"
 )
 
@@ -38,7 +37,7 @@ func columnSum(m gocv.Mat, x int) int {
 }
 
 func TestStitchPanorama_EmptyInput(t *testing.T) {
-	out := StitchPanorama("t.mp4", nil, 100, 50, 0)
+	out := stitchPanorama("t.mp4", nil, 100, 50, 0, 0)
 	defer out.Close()
 	if out.Cols() != 100 || out.Rows() != 50 {
 		t.Fatalf("empty input: got %dx%d, want 100x50", out.Cols(), out.Rows())
@@ -46,18 +45,19 @@ func TestStitchPanorama_EmptyInput(t *testing.T) {
 }
 
 func TestStitchPanorama_PaintsExpectedColumnStrips(t *testing.T) {
-	// Simulate a horizontal pan with five frames, each 40px wide
-	// content sliding right by 10px. Leftmost columns:
-	//   frame 0 → 0,   frame 1 → 10, frame 2 → 20,
-	//   frame 3 → 30,  frame 4 → 40
-	// With frameXOffset=0 the column-strip algorithm should paint:
-	//   cols [0, 10)  from frame 0 (color A)
-	//   cols [10, 20) from frame 1 (color B)
-	//   cols [20, 30) from frame 2 (color C)
-	//   cols [30, 40) from frame 3 (color D)
-	//   cols [40, 80) from frame 4 (tail strip — frame 4 content
-	//                   extends to col 80, painted up to canvas edge)
-	//   cols [80, 100) black (outside any frame's content)
+	// Simulate a horizontal pan with five frames, each 40px wide content
+	// sliding right by 10px. Leftmost columns: 0,10,20,30,40.
+	//
+	// With frameXOffset=0 the column-strip algorithm paints one strip per
+	// consecutive pair:
+	//   cols [0, 10)   from frame 0 (color A)
+	//   cols [10, 20)  from frame 1 (color B)
+	//   cols [20, 30)  from frame 2 (color C)
+	//   cols [30, 40)  from frame 3 (color D)
+	//   cols [40, 100) black — frame 4 is the last frame and is never a
+	//                  "prev", so its strip isn't painted (the black is
+	//                  cropped away later by buildSequence). No synthetic
+	//                  tail strip — that was the old edge smear.
 	canvasW, canvasH := 100, 20
 	a := []uint8{100, 0, 0}
 	b := []uint8{0, 100, 0}
@@ -77,7 +77,7 @@ func TestStitchPanorama_PaintsExpectedColumnStrips(t *testing.T) {
 		}
 	}()
 
-	out := StitchPanorama("strip", frames, canvasW, canvasH, 0)
+	out := stitchPanorama("strip", frames, canvasW, canvasH, 0, 0)
 	defer out.Close()
 
 	check := func(name string, x0, x1 int, want []uint8) {
@@ -93,20 +93,19 @@ func TestStitchPanorama_PaintsExpectedColumnStrips(t *testing.T) {
 	check("frame1 strip", 10, 20, b)
 	check("frame2 strip", 20, 30, c)
 	check("frame3 strip", 30, 40, d)
-	check("frame4 tail strip", 40, 80, e)
-	// Cols 80..99 are outside any frame's content → still black.
-	for x := 80; x < canvasW; x++ {
+	// Cols 40..99 stay black: the last frame's strip is not painted.
+	for x := 40; x < canvasW; x++ {
 		if columnSum(out, x) != 0 {
-			t.Errorf("col %d should remain black, got non-zero sum", x)
+			t.Errorf("col %d should remain black (no tail strip), got non-zero", x)
 		}
 	}
 }
 
 func TestStitchPanorama_RespectsFrameXOffset(t *testing.T) {
-	// With frameXOffset=5 the regular strips shift right by 5 cols.
-	// The leading strip fills cols [0, L_0+5) from frame 0 so the
-	// left edge isn't black; the trailing strip extends frame 1's
-	// content to the canvas edge (or its content boundary).
+	// frameXOffset=5 shifts the regular strips right by 5 cols. With two
+	// frames (L_0=0, L_1=10) the only pair paints frame 0's strip at
+	// [L_0+5, L_1+5) = [5, 15). Nothing is painted left of 5 or right of
+	// 15 (no synthetic edge strips, and frame 1 is the last frame).
 	canvasW, canvasH := 60, 10
 	frames := []gocv.Mat{
 		makeWarped(t, canvasW, canvasH, 0, 20, 80, 0, 0),
@@ -118,107 +117,28 @@ func TestStitchPanorama_RespectsFrameXOffset(t *testing.T) {
 		}
 	}()
 
-	out := StitchPanorama("offset", frames, canvasW, canvasH, 5)
+	out := stitchPanorama("offset", frames, canvasW, canvasH, 5, 0)
 	defer out.Close()
 
-	// Cols [0, 5) covered by the leading strip from frame 0.
+	// Cols [0, 5) black — no leading strip.
 	for x := 0; x < 5; x++ {
-		v := out.GetVecbAt(0, x)
-		if v[0] != 80 || v[1] != 0 {
-			t.Errorf("col %d (leading strip): got %v, want frame 0 colour", x, v)
+		if columnSum(out, x) != 0 {
+			t.Errorf("col %d should be black (no leading strip), got non-zero", x)
 			break
 		}
 	}
-	// Cols [5, 15) regular strip from frame 0 between L_0+5 and L_1+5.
+	// Cols [5, 15) painted from frame 0 (its color).
 	for x := 5; x < 15; x++ {
 		v := out.GetVecbAt(0, x)
 		if v[0] != 80 || v[1] != 0 {
-			t.Errorf("col %d frame0 strip shifted: got %v", x, v)
+			t.Errorf("col %d (shifted frame0 strip): got %v, want frame 0 colour", x, v)
 			break
 		}
 	}
-	// Cols [15, 30) tail strip from frame 1 (content extends to 30).
-	for x := 15; x < 30; x++ {
-		v := out.GetVecbAt(0, x)
-		if v[0] != 0 || v[1] != 80 {
-			t.Errorf("col %d frame1 tail shifted: got %v", x, v)
-			break
-		}
-	}
-}
-
-func TestStitchPanorama_LeadingStripBoundedByEdgeStripWidth(t *testing.T) {
-	// With a large frameXOffset, the leading strip must paint a
-	// bounded band of cols immediately to the left of the first
-	// regular strip — NOT all the way to canvas col 0. The
-	// configured bound is config.EdgeStripWidth.
-	canvasW, canvasH := 400, 10
-	frames := []gocv.Mat{
-		// Frame 0 spans cols [0, 60).
-		makeWarped(t, canvasW, canvasH, 0, 60, 90, 0, 0),
-		// Frame 1 spans cols [20, 80).
-		makeWarped(t, canvasW, canvasH, 20, 60, 0, 90, 0),
-	}
-	defer func() {
-		for _, f := range frames {
-			f.Close()
-		}
-	}()
-
-	const offset = 100
-	out := StitchPanorama("lead", frames, canvasW, canvasH, offset)
-	defer out.Close()
-
-	leadEnd := 0 + offset // L_0 + offset
-	leadStart := leadEnd - config.EdgeStripWidth
-	// Far-left cols [0, leadStart) must remain black — we are NOT
-	// stretching frame 0 across them.
-	for x := 0; x < leadStart; x++ {
+	// Cols [15, 60) black — frame 1 is last, its strip isn't painted.
+	for x := 15; x < canvasW; x++ {
 		if columnSum(out, x) != 0 {
-			t.Errorf("col %d should remain black (outside edge band), got non-zero", x)
-			break
-		}
-	}
-	// Cols inside the edge band but bounded by frame 0's actual
-	// content extent (frame 0 covers [0, 60), so cols [leadStart, 60)
-	// inside the band are painted; cols beyond 60 are black because
-	// frame 0 has no content there).
-	bandPaintMax := leadEnd
-	if 60 < bandPaintMax {
-		bandPaintMax = 60
-	}
-	for x := leadStart; x < bandPaintMax; x++ {
-		v := out.GetVecbAt(0, x)
-		if v[0] != 90 || v[1] != 0 {
-			t.Errorf("col %d (leading band): got %v, want frame 0 colour", x, v)
-			break
-		}
-	}
-}
-
-func TestStitchPanorama_TrailingStripBoundedByEdgeStripWidth(t *testing.T) {
-	// Mirror of the leading test: trailing strip must paint at most
-	// EdgeStripWidth cols to the right of the last regular strip.
-	canvasW, canvasH := 400, 10
-	frames := []gocv.Mat{
-		makeWarped(t, canvasW, canvasH, 0, 60, 90, 0, 0),
-		makeWarped(t, canvasW, canvasH, 20, 60, 0, 90, 0),
-	}
-	defer func() {
-		for _, f := range frames {
-			f.Close()
-		}
-	}()
-	const offset = 0
-	out := StitchPanorama("tail", frames, canvasW, canvasH, offset)
-	defer out.Close()
-
-	trailStart := 20 + offset // L_1 + offset (frame 1's leftmost)
-	trailEnd := trailStart + config.EdgeStripWidth
-	// Cols past the band must be black.
-	for x := trailEnd; x < canvasW; x++ {
-		if columnSum(out, x) != 0 {
-			t.Errorf("col %d should remain black (past trailing band), got non-zero", x)
+			t.Errorf("col %d should be black (no tail strip), got non-zero", x)
 			break
 		}
 	}
@@ -237,12 +157,65 @@ func TestStitchPanorama_HandlesEmptyMats(t *testing.T) {
 		}
 	}()
 
-	out := StitchPanorama("empty", frames, canvasW, canvasH, 0)
+	out := stitchPanorama("empty", frames, canvasW, canvasH, 0, 0)
 	defer out.Close()
-	// Cols 0..49 should be covered (frame 0: 0..30, frame 2: 20..50).
-	for x := 0; x < canvasW; x++ {
-		if columnSum(out, x) == 0 {
-			t.Errorf("column %d unexpectedly black", x)
+
+	// The empty mat is skipped, so the only pair is (frame0, frame2):
+	// frame0's strip [L_0, L_2) = [0, 20) is painted; [20, 50) stays black.
+	for x := 0; x < 20; x++ {
+		v := out.GetVecbAt(0, x)
+		if v[0] != 80 || v[1] != 0 {
+			t.Errorf("col %d should be frame0 colour, got %v", x, v)
+			break
 		}
+	}
+	for x := 20; x < canvasW; x++ {
+		if columnSum(out, x) != 0 {
+			t.Errorf("col %d should be black (frame2 is last), got non-zero", x)
+			break
+		}
+	}
+}
+
+func TestStitchPanorama_FeatherBlendsSeam(t *testing.T) {
+	// Two frames: f0 blue content [0,40), f1 red content [20,60). The seam
+	// sits at x=20; with feathering the band [20,20+feather) cross-fades
+	// blue -> red instead of switching hard.
+	canvasW, canvasH := 80, 10
+	f0 := makeWarped(t, canvasW, canvasH, 0, 40, 255, 0, 0)  // blue (B,G,R)
+	f1 := makeWarped(t, canvasW, canvasH, 20, 40, 0, 0, 255) // red
+	frames := []gocv.Mat{f0, f1}
+	defer func() {
+		for _, f := range frames {
+			f.Close()
+		}
+	}()
+
+	const feather = 8
+	out := stitchPanorama("feather", frames, canvasW, canvasH, 0, feather)
+	defer out.Close()
+
+	// f0's opaque core (before the seam) stays pure blue.
+	if v := out.GetVecbAt(0, 5); v[0] != 255 || v[2] != 0 {
+		t.Errorf("f0 core col 5 = %v, want pure blue", v)
+	}
+	// Somewhere in the seam band both channels are non-zero — a genuine
+	// blend, not a hard edge.
+	mixed := false
+	for x := 20; x < 20+feather; x++ {
+		v := out.GetVecbAt(0, x)
+		if v[0] > 0 && v[2] > 0 {
+			mixed = true
+			break
+		}
+	}
+	if !mixed {
+		t.Error("seam band has no blended column; feather not applied")
+	}
+	// The cross-fade is monotone: blue falls and red rises across the band.
+	early := out.GetVecbAt(0, 21)
+	late := out.GetVecbAt(0, 26)
+	if !(early[0] >= late[0] && early[2] <= late[2]) {
+		t.Errorf("seam not monotone blue->red: x21=%v x26=%v", early, late)
 	}
 }

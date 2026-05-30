@@ -151,25 +151,3 @@ func TestApplyBlur_PreservesDimensions(t *testing.T) {
 			out.Cols(), out.Rows(), src.Cols(), src.Rows())
 	}
 }
-
-func TestLinspaceSliceMatchesChan(t *testing.T) {
-	// linspace() and LinspaceChan() must agree, since one wraps the
-	// other.
-	cases := [][3]int{{0, 10, 5}, {2, 2, 3}, {0, 0, 0}, {5, 50, 10}}
-	for _, c := range cases {
-		got := linspace(c[0], c[1], c[2])
-		ch := LinspaceChan(c[0], c[1], c[2])
-		var fromChan []int
-		for v := range ch {
-			fromChan = append(fromChan, v)
-		}
-		if len(got) != len(fromChan) {
-			t.Fatalf("linspace(%v) len mismatch: %d vs %d", c, len(got), len(fromChan))
-		}
-		for i := range got {
-			if got[i] != fromChan[i] {
-				t.Errorf("linspace(%v)[%d]: slice=%d chan=%d", c, i, got[i], fromChan[i])
-			}
-		}
-	}
-}
