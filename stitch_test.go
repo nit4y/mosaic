@@ -215,7 +215,7 @@ func TestStitchPanorama_FeatherBlendsSeam(t *testing.T) {
 	// The cross-fade is monotone: blue falls and red rises across the band.
 	early := out.GetVecbAt(0, 21)
 	late := out.GetVecbAt(0, 26)
-	if !(early[0] >= late[0] && early[2] <= late[2]) {
+	if early[0] < late[0] || early[2] > late[2] {
 		t.Errorf("seam not monotone blue->red: x21=%v x26=%v", early, late)
 	}
 }
