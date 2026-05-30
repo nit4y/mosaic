@@ -3,7 +3,6 @@ package mosaic
 import (
 	"image"
 
-	"github.com/nit4y/mosaic/internal/config"
 	"gocv.io/x/gocv"
 )
 
@@ -56,8 +55,8 @@ func panoramaCount(kind Kind, total int) int {
 //
 // The input panoramas are not consumed (cropping copies out of them), so
 // the caller still owns and must close them.
-func buildSequence(panoramas []resJob, kind Kind) (frames []resJob, cleanup func()) {
-	cropped := cropToCommonContent(panoramas)
+func buildSequence(panoramas []resJob, kind Kind, cfg Config) (frames []resJob, cleanup func()) {
+	cropped := cropToCommonContent(panoramas, cfg)
 	cleanup = func() {
 		for _, f := range cropped {
 			f.mat.Close()
@@ -76,13 +75,13 @@ func buildSequence(panoramas []resJob, kind Kind) (frames []resJob, cleanup func
 // same order. Using one common rectangle (rather than per-frame trimming)
 // keeps the frames identically sized so they form a valid video without
 // resizing or padding.
-func cropToCommonContent(panoramas []resJob) []resJob {
+func cropToCommonContent(panoramas []resJob, cfg Config) []resJob {
 	rect := commonContentRect(panoramas)
 	// Optionally shrink the vertical extent to the rows covered across the
 	// full width in every frame, dropping the diagonal black wedges that
 	// vertical drift leaves inside the bounding box. Off by default.
-	if config.CropToCoveredBand {
-		rect = tightenToCoveredBand(panoramas, rect)
+	if cfg.CropToCoveredBand {
+		rect = tightenToCoveredBand(panoramas, rect, cfg.CoverageThreshold)
 	}
 	out := make([]resJob, len(panoramas))
 	for i, p := range panoramas {
@@ -123,7 +122,7 @@ func commonContentRect(panoramas []resJob) image.Rectangle {
 // below the content — which the plain bounding box keeps — without
 // re-flattening the panorama. The horizontal extent of box is unchanged.
 // If no row clears the threshold in all frames, box is returned unchanged.
-func tightenToCoveredBand(panoramas []resJob, box image.Rectangle) image.Rectangle {
+func tightenToCoveredBand(panoramas []resJob, box image.Rectangle, coverageThreshold float64) image.Rectangle {
 	rows := box.Dy()
 	if rows <= 0 || box.Dx() <= 0 {
 		return box
@@ -151,7 +150,7 @@ func tightenToCoveredBand(panoramas []resJob, box image.Rectangle) image.Rectang
 		prof := rowCoverage(roi)
 		roi.Close()
 		for y := 0; y < rows && y < len(prof); y++ {
-			if prof[y] < config.CoverageThreshold {
+			if prof[y] < coverageThreshold {
 				covered[y] = false
 			}
 		}

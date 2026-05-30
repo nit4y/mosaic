@@ -4,19 +4,18 @@ import (
 	"image"
 	"math"
 
-	"github.com/nit4y/mosaic/internal/config"
 	"gocv.io/x/gocv"
 )
 
-// ApplyBlur downscales the image by config.BlurResolution, then upscales it
-// back to its original size, producing a simple blur.
-func ApplyBlur(img gocv.Mat) gocv.Mat {
+// ApplyBlur downscales the image by blurResolution, then upscales it back to
+// its original size, producing a simple blur.
+func ApplyBlur(img gocv.Mat, blurResolution float64) gocv.Mat {
 	h := img.Rows()
 	w := img.Cols()
 
 	// compute downscaled dimensions (at least 1×1)
-	smallW := int(math.Max(1, float64(w)*config.BlurResolution))
-	smallH := int(math.Max(1, float64(h)*config.BlurResolution))
+	smallW := int(math.Max(1, float64(w)*blurResolution))
+	smallH := int(math.Max(1, float64(h)*blurResolution))
 
 	// downscale
 	small := gocv.NewMat()
@@ -81,7 +80,7 @@ func detectCorners(gray gocv.Mat, maxCorners int, quality float64, minDist float
 // + Lucas-Kanade optical flow + RANSAC affine. Returns a 3×3
 // homogeneous Mat with horizontal-only motion (no rotation/skew, unit
 // scale, Y-damped per config) and the motion direction.
-func AlignImages(img1, img2 gocv.Mat, calcDirection bool, lg *Logger) (*gocv.Mat, string) {
+func AlignImages(img1, img2 gocv.Mat, calcDirection bool, cfg Config, lg *Logger) (*gocv.Mat, Direction) {
 	log := lg.With("operation", "align_images")
 
 	// convert to grayscale
@@ -94,16 +93,16 @@ func AlignImages(img1, img2 gocv.Mat, calcDirection bool, lg *Logger) (*gocv.Mat
 
 	// Detect Shi-Tomasi corners in gray1 — these are what
 	// Lucas-Kanade will track from frame 1 to frame 2.
-	ptsList, prevPtsMat := detectCorners(gray1, config.MaxCorners, config.CornerQuality, float64(config.CornerMinDist))
+	ptsList, prevPtsMat := detectCorners(gray1, cfg.MaxCorners, cfg.CornerQuality, float64(cfg.CornerMinDist))
 	defer prevPtsMat.Close()
 	if len(ptsList) == 0 {
 		log.Error("No corners detected in gray1")
-		return nil, config.Left
+		return nil, Left
 	}
 
 	// blur for LK stability
-	b1 := ApplyBlur(gray1)
-	b2 := ApplyBlur(gray2)
+	b1 := ApplyBlur(gray1, cfg.BlurResolution)
+	b2 := ApplyBlur(gray2, cfg.BlurResolution)
 	defer b1.Close()
 	defer b2.Close()
 
@@ -123,11 +122,11 @@ func AlignImages(img1, img2 gocv.Mat, calcDirection bool, lg *Logger) (*gocv.Mat
 		nextPtsMat,
 		&status,
 		&errMat,
-		config.LKWinSize,
-		config.LKMaxLevel,
-		config.LKCriteria,
-		config.LKFlags,
-		config.LKMinEigThreshold,
+		cfg.LKWinSize,
+		cfg.LKMaxLevel,
+		cfg.LKCriteria,
+		cfg.LKFlags,
+		cfg.LKMinEigThreshold,
 	)
 
 	// filter valid correspondences
@@ -153,15 +152,15 @@ func AlignImages(img1, img2 gocv.Mat, calcDirection bool, lg *Logger) (*gocv.Mat
 		v2,
 		inliersMask,
 		int(gocv.HomographyMethodRANSAC),
-		float64(config.RansacThreshold),
-		config.RansacMaxIterations,
-		config.RansacConfidence,
-		config.RansacFlag,
+		float64(cfg.RansacThreshold),
+		uint(cfg.RansacMaxIterations),
+		cfg.RansacConfidence,
+		uint(cfg.RansacFlag),
 	)
 	defer aff.Close()
 
 	// compute direction if needed
-	dir := config.Left
+	dir := Left
 	if calcDirection {
 		dir = CalcMotionDirection(valid1, valid2)
 	}
@@ -178,7 +177,7 @@ func AlignImages(img1, img2 gocv.Mat, calcDirection bool, lg *Logger) (*gocv.Mat
 	// same Mat returned by StablizeTranslation, so we close it only on
 	// the failure path).
 	H := ToHomogeneous(aff)
-	Hh := StablizeTranslation(H)
+	Hh := StablizeTranslation(H, cfg.YTranslationDamping)
 	if Hh.Empty() {
 		log.Error("Failed to stabilize horizontal motion - empty matrix")
 		Hh.Close()

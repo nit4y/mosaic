@@ -3,7 +3,6 @@ package mosaic
 import (
 	"math"
 
-	"github.com/nit4y/mosaic/internal/config"
 	"gocv.io/x/gocv"
 )
 
@@ -26,9 +25,12 @@ func StabilizeScale(mat gocv.Mat) gocv.Mat {
 	return mat
 }
 
-func StablizeTranslation(mat gocv.Mat) gocv.Mat {
+// StablizeTranslation reduces a homography to horizontal translation: it
+// zeroes rotation, forces unit scale, and damps the vertical translation by
+// yDamping (1.0 = keep ty as-is, 0.0 = remove it).
+func StablizeTranslation(mat gocv.Mat, yDamping float64) gocv.Mat {
 	mat = StabilizeScale(StabilizeHorizontalMotion(mat))
-	return DampYTranslation(mat, config.YTranslationDamping)
+	return DampYTranslation(mat, yDamping)
 }
 
 // DampYTranslation scales the ty component (element [1,2]) of a 3×3
@@ -68,11 +70,11 @@ func ToHomogeneous(affine gocv.Mat) gocv.Mat {
 }
 
 // CalcMotionDirection estimates the dominant motion direction from two
-// corresponding slices of points. Returns "left", "right", "up", or "down".
-func CalcMotionDirection(pts1, pts2 []gocv.Point2f) string {
+// corresponding slices of points.
+func CalcMotionDirection(pts1, pts2 []gocv.Point2f) Direction {
 	n := len(pts1)
 	if n == 0 {
-		return config.Left // default if no points
+		return Left // default if no points
 	}
 	var sumDx, sumDy float64
 	for i := 0; i < n; i++ {
@@ -88,13 +90,13 @@ func CalcMotionDirection(pts1, pts2 []gocv.Point2f) string {
 	// pick dominant axis
 	if math.Abs(dxMean) > math.Abs(dyMean) {
 		if dxMean > 0 {
-			return config.Right
+			return Right
 		}
-		return config.Left
+		return Left
 	} else {
 		if dyMean > 0 {
-			return config.Down
+			return Down
 		}
-		return config.Up
+		return Up
 	}
 }
