@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"sync"
 	"time"
 
 	"github.com/nit4y/mosaic/internal/config"
@@ -797,32 +796,29 @@ func pingPongResJobs(jobs []resJob) []resJob {
 }
 
 // GenerateVideoFromFrames converts a slice of Mats into an MP4 video file.
-func GenerateVideoFromFrames(
-	images []resJob,
-	height int,
-	width int,
-	outputPath string,
-	fps int) error {
-
+func GenerateVideoFromFrames(images []resJob, outputPath string, fps int) error {
 	log := logger.WithOperation("create_video")
-	log.Info("Creating video", "output", outputPath, "fps", fps, "frame_count", len(images))
+	if len(images) == 0 {
+		return fmt.Errorf("no frames to write to %s", outputPath)
+	}
 
-	// Get dimensions from first image
-	log.Info("Video dimensions", "width", width, "height", height)
+	// Every frame in a sequence shares one size — the canvas size for
+	// static, the common padded size for dynamic — so derive the writer
+	// dimensions from the first frame instead of plumbing them through.
+	width, height := images[0].mat.Cols(), images[0].mat.Rows()
+	log.Info("Creating video", "output", outputPath, "fps", fps,
+		"frame_count", len(images), "width", width, "height", height)
 
-	// Create video writer
 	writer, err := gocv.VideoWriterFile(outputPath, "mp4v", float64(fps), width, height, true)
 	if err != nil {
 		return fmt.Errorf("failed to create video writer: %w", err)
 	}
 	defer writer.Close()
 
-	// Write frames
 	for _, job := range images {
 		if err := writer.Write(job.mat); err != nil {
 			return fmt.Errorf("failed to write frame %d: %w", job.idx, err)
 		}
-		log.Info("Wrote frame", "frame", job.idx)
 	}
 
 	log.Info("Video creation completed")
@@ -975,10 +971,10 @@ func replaceMat(frames []gocv.Mat, i int, next gocv.Mat) {
 }
 
 // GenerateMosaicVideo generates a panoramic mosaic video using a worker pool.
-func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
+func GenerateMosaicVideo(videoPath, outputDir string, kind Kind) error {
 	videoName := filepath.Base(videoPath)
 	log := logger.WithVideo(videoName)
-	log.Info("Starting video processing", "dynamic", dynamic)
+	log.Info("Starting video processing", "kind", kind)
 	start := time.Now()
 
 	// Extract frames
@@ -1055,8 +1051,26 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 		}
 	}()
 
-	// Now warp all frames using the inverted, offset transforms
-	warpedFrames := make([]gocv.Mat, len(frames))
+	// Warp every frame onto the canvas with bounded parallelism. A nil
+	// transform (a frame we couldn't align) yields an empty placeholder so
+	// indices stay aligned with `frames`.
+	workers := config.MaxWorkers
+	warpedFrames := parallelMap(len(frames), workers, func(i int) gocv.Mat {
+		if transforms[i] == nil {
+			return gocv.NewMat()
+		}
+		warped := gocv.NewMat()
+		gocv.WarpPerspectiveWithParams(
+			frames[i],
+			&warped,
+			*transforms[i],
+			image.Pt(canvasWidth, canvasHeight),
+			gocv.InterpolationLinear,
+			gocv.BorderConstant,
+			color.RGBA{0, 0, 0, 0},
+		)
+		return warped
+	})
 	defer func() {
 		for _, f := range warpedFrames {
 			if !f.Empty() {
@@ -1065,123 +1079,48 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 		}
 	}()
 
-	jobs := make(chan int, len(frames))
-	results := make(chan resJob, len(frames))
-	var wg sync.WaitGroup
-
-	for w := 0; w < config.ProcessPoolWorkers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := range jobs {
-				if transforms[i] == nil {
-					// Skip frames whose transform couldn't be computed
-					// — send a placeholder NewMat so the index slot
-					// stays aligned with `frames`.
-					results <- resJob{idx: i, mat: gocv.NewMat()}
-					continue
-				}
-				warped := gocv.NewMat()
-				gocv.WarpPerspectiveWithParams(
-					frames[i],
-					&warped,
-					*transforms[i],
-					image.Pt(canvasWidth, canvasHeight),
-					gocv.InterpolationLinear,
-					gocv.BorderConstant,
-					color.RGBA{0, 0, 0, 0},
-				)
-				results <- resJob{idx: i, mat: warped}
-			}
-		}()
-	}
-
-	for i := range frames {
-		jobs <- i
-	}
-	close(jobs)
-
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	debugFrames := debugWritesEnabled()
-	for job := range results {
-		warpedFrames[job.idx] = job.mat
-		if debugFrames {
-			debugPath := filepath.Join(outputDir, fmt.Sprintf("warped_frame_%d.jpg", job.idx))
-			if ok := gocv.IMWrite(debugPath, job.mat); !ok {
-				log.Error("Failed to save warped frame", "index", job.idx)
+	if debugWritesEnabled() {
+		for i, m := range warpedFrames {
+			debugPath := filepath.Join(outputDir, fmt.Sprintf("warped_frame_%d.jpg", i))
+			if ok := gocv.IMWrite(debugPath, m); !ok {
+				log.Error("Failed to save warped frame", "index", i)
 			}
 		}
 	}
 
-	// Generate output filename
-	outputName := "static_mosaic"
-	if dynamic {
-		outputName = "dynamic_mosaic"
-	}
-	outputPath := filepath.Join(outputDir, outputName+".mp4")
+	outputPath := filepath.Join(outputDir, kind.String()+".mp4")
 
-	// Generate half the requested frame count as unique panoramas;
-	// pingPongResJobs below doubles them so the output video plays
-	// forward then backward, matching the Python ref's
-	// panoramas + panoramas[::-1] pattern.
+	// Sweep a panorama at evenly-spaced column offsets. Static stitches
+	// half the frame count (ping-pong doubles it back); Dynamic uses them
+	// all (played forward once).
 	totalFrames := config.OutputFPS * config.OutputLengthInSeconds
-	uniquePanoramas := totalFrames / 2
-	if uniquePanoramas < 1 {
-		uniquePanoramas = 1
-	}
-	selectedIndices := linspace(config.MinimalPixelColumnIndex, len(warpedFrames), uniquePanoramas)
-	log.Info("Selected indices for mosaic", "indices", selectedIndices, "total_output_frames", totalFrames)
+	nPanoramas := panoramaCount(kind, totalFrames)
+	selectedIndices := linspace(config.MinimalPixelColumnIndex, len(warpedFrames), nPanoramas)
+	log.Info("Selected offsets for mosaic", "count", len(selectedIndices), "kind", kind)
 
-	mosaics := make(chan resJob, len(selectedIndices))
-	jobsCh := make(chan int, len(selectedIndices))
-	for _, idx := range selectedIndices {
-		jobsCh <- idx
-	}
-	close(jobsCh)
-
-	stitchWg := sync.WaitGroup{}
-	for sticher := 0; sticher < config.StitcherWorkers; sticher++ {
-		stitchWg.Add(1)
-		go func() {
-			defer stitchWg.Done()
-			for offset := range jobsCh {
-				mosaics <- resJob{
-					idx: offset,
-					mat: StitchPanorama(videoName, warpedFrames, canvasWidth, canvasHeight, offset),
-				}
-			}
-		}()
-	}
-
-	go func() {
-		stitchWg.Wait()
-		close(mosaics)
-	}()
-
-	outputFrames := make([]resJob, 0, len(selectedIndices))
-	for job := range mosaics {
-		outputFrames = append(outputFrames, job)
-	}
+	// Stitch each offset into a panorama with bounded parallelism.
+	// parallelMap preserves offset order, so no post-sort is needed.
+	panoramas := parallelMap(len(selectedIndices), workers, func(i int) resJob {
+		offset := selectedIndices[i]
+		return resJob{
+			idx: offset,
+			mat: StitchPanorama(videoName, warpedFrames, canvasWidth, canvasHeight, offset),
+		}
+	})
 	defer func() {
-		for _, f := range outputFrames {
-			f.mat.Close()
+		for _, p := range panoramas {
+			p.mat.Close()
 		}
 	}()
 
-	sort.Slice(outputFrames, func(i, j int) bool {
-		return outputFrames[i].idx < outputFrames[j].idx
-	})
+	// Turn the panoramas into the final frame sequence (static ping-pong,
+	// or dynamic trim+pad played forward). cleanupSeq frees any Mats the
+	// builder allocated; the panoramas themselves are freed by the defer
+	// above.
+	videoSeq, cleanupSeq := buildSequence(panoramas, kind)
+	defer cleanupSeq()
 
-	// Build the ping-pong sequence (forward then reversed). The
-	// reversed half shares Mat references with outputFrames, so the
-	// outer deferred Close still does the right thing — each
-	// underlying Mat is closed exactly once.
-	videoSeq := pingPongResJobs(outputFrames)
-	if err := GenerateVideoFromFrames(videoSeq, canvasHeight, canvasWidth, outputPath, config.OutputFPS); err != nil {
+	if err := GenerateVideoFromFrames(videoSeq, outputPath, config.OutputFPS); err != nil {
 		return fmt.Errorf("failed to save video: %w", err)
 	}
 
@@ -1194,11 +1133,14 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 // wrapper for the CLI; tests and external callers should use
 // GenerateVideosFromDir to keep paths injectable.
 func GenerateVideos() error {
-	return GenerateVideosFromDir(config.InputDir, "output")
+	return GenerateVideosFromDir(config.InputDir, "output", Static)
 }
 
-// GenerateVideosFromDir is the testable form of GenerateVideos.
-func GenerateVideosFromDir(inputDir, outputDir string) error {
+// GenerateVideosFromDir generates a mosaic of the given Kind for every
+// video in inputDir, writing each under outputDir/<video name>/. Videos are
+// processed with bounded concurrency (config.VideoConcurrency); it returns
+// the first error encountered, after attempting every video.
+func GenerateVideosFromDir(inputDir, outputDir string, kind Kind) error {
 	videoFiles, err := listVideoFiles(inputDir)
 	if err != nil {
 		return err
@@ -1207,35 +1149,35 @@ func GenerateVideosFromDir(inputDir, outputDir string) error {
 		return fmt.Errorf("no video files found in input directory %q", inputDir)
 	}
 
-	logger.Log.Info("Found video files to process", "count", len(videoFiles), "input_dir", inputDir)
+	logger.Log.Info("Found video files to process",
+		"count", len(videoFiles), "input_dir", inputDir, "kind", kind)
 
-	var firstErr error
-	for _, videoPath := range videoFiles {
-		videoName := filepath.Base(videoPath)
-		log := logger.WithVideo(videoName)
+	// Each in-flight video holds many large Mats, so VideoConcurrency
+	// defaults to 1 (sequential = lightest on memory). Raise it to trade
+	// RAM for throughput — see config for the guardrail rationale.
+	errs := parallelMap(len(videoFiles), config.VideoConcurrency, func(i int) error {
+		videoPath := videoFiles[i]
+		log := logger.WithVideo(filepath.Base(videoPath))
 
-		log.Info("Starting video processing")
-
-		videoOutputDir := filepath.Join(outputDir, videoName)
+		videoOutputDir := filepath.Join(outputDir, filepath.Base(videoPath))
 		if err := os.MkdirAll(videoOutputDir, 0o755); err != nil {
 			log.Error("Failed to create output directory", "error", err)
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
+			return err
 		}
+		if err := GenerateMosaicVideo(videoPath, videoOutputDir, kind); err != nil {
+			log.Error("Failed to generate mosaic", "error", err, "kind", kind)
+			return err
+		}
+		log.Info("Generated mosaic", "kind", kind)
+		return nil
+	})
 
-		if err := GenerateMosaicVideo(videoPath, videoOutputDir, false); err != nil {
-			log.Error("Failed to generate static mosaic", "error", err)
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
+	for _, e := range errs {
+		if e != nil {
+			return e
 		}
-		log.Info("Generated static mosaic")
 	}
-
-	return firstErr
+	return nil
 }
 
 // listVideoFiles returns sorted absolute (or input-dir-relative) paths

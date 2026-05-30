@@ -18,11 +18,11 @@ func TestGenerateMosaicVideo_EndToEnd(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	if err := GenerateMosaicVideo(shortClip, outputDir, false); err != nil {
+	if err := GenerateMosaicVideo(shortClip, outputDir, Static); err != nil {
 		t.Fatalf("GenerateMosaicVideo failed: %v", err)
 	}
 
-	outFile := filepath.Join(outputDir, "static_mosaic.mp4")
+	outFile := filepath.Join(outputDir, "static.mp4")
 	info, err := os.Stat(outFile)
 	if err != nil {
 		t.Fatalf("expected output at %s, got: %v", outFile, err)
@@ -104,11 +104,11 @@ func TestGenerateVideosFromDir(t *testing.T) {
 		}
 	}
 
-	if err := GenerateVideosFromDir(inputDir, outputDir); err != nil {
+	if err := GenerateVideosFromDir(inputDir, outputDir, Static); err != nil {
 		t.Fatalf("GenerateVideosFromDir: %v", err)
 	}
 
-	outFile := filepath.Join(outputDir, "clip.mp4", "static_mosaic.mp4")
+	outFile := filepath.Join(outputDir, "clip.mp4", "static.mp4")
 	if _, err := os.Stat(outFile); err != nil {
 		t.Fatalf("expected output at %s: %v", outFile, err)
 	}
@@ -116,7 +116,7 @@ func TestGenerateVideosFromDir(t *testing.T) {
 
 func TestGenerateVideosFromDir_EmptyInput(t *testing.T) {
 	inputDir := t.TempDir()
-	if err := GenerateVideosFromDir(inputDir, t.TempDir()); err == nil {
+	if err := GenerateVideosFromDir(inputDir, t.TempDir(), Static); err == nil {
 		t.Error("expected error for empty input dir, got nil")
 	}
 }
