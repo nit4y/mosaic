@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/nit4y/mosaic/actions/workflows/ci.yml/badge.svg)](https://github.com/nit4y/mosaic/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/nit4y/mosaic.svg)](https://pkg.go.dev/github.com/nit4y/mosaic)
-[![Go Report Card](https://goreportcard.com/badge/github.com/nit4y/mosaic)](https://goreportcard.com/report/github.com/nit4y/mosaic)
+[![Go Report Card](https://goreportcard.com/badge/github.com/nit4y/mosaic?style=flat)](https://goreportcard.com/report/github.com/nit4y/mosaic)
 [![Release](https://img.shields.io/github/v/release/nit4y/mosaic)](https://github.com/nit4y/mosaic/releases)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
