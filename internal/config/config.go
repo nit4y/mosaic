@@ -60,6 +60,16 @@ const (
 	// the strip width simply turn the whole mosaic into a running blend.
 	FeatherWidth = 2
 
+	// CoverageThreshold is the minimum fraction of non-black pixels a row
+	// must have (across the content width, in every panorama) to be kept
+	// when cropping the output. With FlattenVertical=false, vertical drift
+	// leaves diagonal black wedges above/below the content; the plain
+	// bounding box keeps them, so we additionally crop to the band of rows
+	// that are this well covered. 1.0 demands fully-opaque rows; lower
+	// values tolerate small gaps. If no row clears the bar we fall back to
+	// the bounding box (no vertical crop).
+	CoverageThreshold = 0.97
+
 	// YTranslationDamping scales the per-pair vertical translation (ty) of
 	// each homography inside AlignImages. 1.0 is a no-op and the normal
 	// value; it exists only as an advanced knob. Use FlattenVertical to

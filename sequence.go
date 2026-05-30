@@ -3,6 +3,7 @@ package mosaic
 import (
 	"image"
 
+	"github.com/nit4y/mosaic/internal/config"
 	"gocv.io/x/gocv"
 )
 
@@ -77,6 +78,10 @@ func buildSequence(panoramas []resJob, kind Kind) (frames []resJob, cleanup func
 // resizing or padding.
 func cropToCommonContent(panoramas []resJob) []resJob {
 	rect := commonContentRect(panoramas)
+	// Shrink the vertical extent to the rows covered across the full width
+	// in every frame, dropping the diagonal black wedges that vertical
+	// drift leaves inside the bounding box.
+	rect = tightenToCoveredBand(panoramas, rect)
 	out := make([]resJob, len(panoramas))
 	for i, p := range panoramas {
 		view := p.mat.Region(rect)
@@ -107,6 +112,107 @@ func commonContentRect(panoramas []resJob) image.Rectangle {
 		return image.Rect(0, 0, 1, 1)
 	}
 	return union
+}
+
+// tightenToCoveredBand shrinks the vertical extent of box to the largest
+// contiguous run of rows that are non-black across (at least
+// config.CoverageThreshold of) the content width in EVERY panorama. This
+// removes the diagonal black wedges that vertical drift leaves above and
+// below the content — which the plain bounding box keeps — without
+// re-flattening the panorama. The horizontal extent of box is unchanged.
+// If no row clears the threshold in all frames, box is returned unchanged.
+func tightenToCoveredBand(panoramas []resJob, box image.Rectangle) image.Rectangle {
+	rows := box.Dy()
+	if rows <= 0 || box.Dx() <= 0 {
+		return box
+	}
+
+	// covered[y] stays true only while every panorama covers row y.
+	covered := make([]bool, rows)
+	for i := range covered {
+		covered[i] = true
+	}
+	any := false
+	for _, p := range panoramas {
+		if p.mat.Empty() {
+			continue
+		}
+		any = true
+		// Measure coverage over THIS panorama's own horizontal content
+		// span (not the union box): different offsets place content at
+		// different x, so a panorama only fills part of the union and would
+		// otherwise never look "covered". Rows stay in the union's range so
+		// they're comparable across panoramas.
+		c := contentRect(p.mat)
+		band := image.Rect(c.Min.X, box.Min.Y, c.Max.X, box.Max.Y)
+		roi := p.mat.Region(band)
+		prof := rowCoverage(roi)
+		roi.Close()
+		for y := 0; y < rows && y < len(prof); y++ {
+			if prof[y] < config.CoverageThreshold {
+				covered[y] = false
+			}
+		}
+	}
+	if !any {
+		return box
+	}
+
+	// Largest contiguous covered run.
+	bestStart, bestLen, curStart := 0, 0, -1
+	for y := 0; y <= rows; y++ {
+		if y < rows && covered[y] {
+			if curStart < 0 {
+				curStart = y
+			}
+			continue
+		}
+		if curStart >= 0 {
+			if y-curStart > bestLen {
+				bestLen, bestStart = y-curStart, curStart
+			}
+			curStart = -1
+		}
+	}
+	if bestLen <= 0 {
+		return box // nothing fully covered — keep the bounding box
+	}
+	top := box.Min.Y + bestStart
+	return image.Rect(box.Min.X, top, box.Max.X, top+bestLen)
+}
+
+// rowCoverage returns, for each row of m, the fraction of non-black pixels.
+// It collapses columns with cv::reduce(SUM) for speed rather than scanning
+// every pixel in Go.
+func rowCoverage(m gocv.Mat) []float64 {
+	if m.Empty() || m.Cols() == 0 {
+		return nil
+	}
+	gray := gocv.NewMat()
+	defer gray.Close()
+	if m.Channels() > 1 {
+		gocv.CvtColor(m, &gray, gocv.ColorBGRToGray)
+	} else {
+		m.CopyTo(&gray)
+	}
+
+	binary := gocv.NewMat()
+	defer binary.Close()
+	gocv.Threshold(gray, &binary, 0, 1, gocv.ThresholdBinary) // 0/1 per pixel
+
+	rowSum := gocv.NewMat()
+	defer rowSum.Close()
+	// dim=1 collapses columns → one value per row = count of non-black px.
+	if err := gocv.Reduce(binary, &rowSum, 1, gocv.ReduceSum, gocv.MatTypeCV32F); err != nil {
+		return nil
+	}
+
+	w := float64(m.Cols())
+	out := make([]float64, m.Rows())
+	for y := 0; y < m.Rows(); y++ {
+		out[y] = float64(rowSum.GetFloatAt(y, 0)) / w
+	}
+	return out
 }
 
 // contentRect returns the bounding rectangle of the non-black pixels in m,

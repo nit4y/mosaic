@@ -98,6 +98,31 @@ func TestCommonContentRect(t *testing.T) {
 	}
 }
 
+func TestTightenToCoveredBand(t *testing.T) {
+	// 100x30 panorama: rows 5..24 fully covered; rows 0..4 and 25..29 only
+	// partially white (simulating the diagonal wedge). The covered band
+	// should be exactly the fully-covered rows.
+	m := gocv.NewMatWithSize(30, 100, gocv.MatTypeCV8UC3)
+	m.SetTo(gocv.NewScalar(0, 0, 0, 0))
+	white := gocv.NewScalar(255, 255, 255, 0)
+	full := m.Region(image.Rect(0, 5, 100, 25)) // rows 5..24, all cols
+	full.SetTo(white)
+	full.Close()
+	topWedge := m.Region(image.Rect(0, 0, 20, 5)) // rows 0..4, few cols
+	topWedge.SetTo(white)
+	topWedge.Close()
+	botWedge := m.Region(image.Rect(80, 25, 100, 30)) // rows 25..29, few cols
+	botWedge.SetTo(white)
+	botWedge.Close()
+	defer m.Close()
+
+	got := tightenToCoveredBand([]resJob{{idx: 0, mat: m}}, image.Rect(0, 0, 100, 30))
+	want := image.Rect(0, 5, 100, 25)
+	if got != want {
+		t.Errorf("tightenToCoveredBand = %v, want %v (wedge rows should be dropped)", got, want)
+	}
+}
+
 func TestBuildSequence_StaticIsPingPong(t *testing.T) {
 	// Fully-colored panoramas (no black), so cropping is a no-op and we can
 	// focus on the ping-pong ordering.
@@ -145,14 +170,16 @@ func TestBuildSequence_DynamicCropsForward(t *testing.T) {
 	if len(frames) != 2 {
 		t.Fatalf("dynamic sequence len = %d, want 2", len(frames))
 	}
-	// All frames cropped to the common content box: union = 50x25.
+	// Horizontal extent is the union of the content boxes (width 50). The
+	// vertical extent is the covered-band crop: frame0 covers rows 5..24,
+	// frame1 rows 0..14, so the rows covered in BOTH are 5..14 → height 10.
 	for i, f := range frames {
-		if f.mat.Cols() != 50 || f.mat.Rows() != 25 {
-			t.Errorf("frame %d: got %dx%d, want 50x25", i, f.mat.Cols(), f.mat.Rows())
+		if f.mat.Cols() != 50 || f.mat.Rows() != 10 {
+			t.Errorf("frame %d: got %dx%d, want 50x10", i, f.mat.Cols(), f.mat.Rows())
 		}
 	}
-	// Frame 0's white content (orig rect 10,5..30,25) sits at the same
-	// place inside the cropped frame (crop origin is 0,0).
+	// Frame 0's white content (orig rect 10,5..30,25) is still present:
+	// cropped(5,10) maps back to orig(10,10) which is inside it.
 	if v := frames[0].mat.GetVecbAt(5, 10); v[0] != 255 {
 		t.Errorf("dynamic frame0 (5,10) = %v, want white content", v)
 	}
