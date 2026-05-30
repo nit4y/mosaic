@@ -13,6 +13,11 @@ jobs:
     container: gocv/opencv:4.11.0
     steps:
       - uses: actions/checkout@v4
+      # The container runs as a different user than the checkout, so git
+      # flags the workspace as "dubious ownership" and Go's VCS stamping
+      # fails. Mark it safe so build/test can stamp version info.
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - run: go build ./...
       - run: go vet ./...
       - run: go test -race -coverprofile=coverage.out ./...
@@ -22,6 +27,8 @@ jobs:
     container: gocv/opencv:4.11.0
     steps:
       - uses: actions/checkout@v4
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Install golangci-lint
         run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.12.2
       - name: Lint

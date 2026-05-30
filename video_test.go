@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-const shortClip = "testdata/boat_short.mp4"
+const shortClip = "testdata/kitchen.mp4"
 
 func TestExtractFrames_ShortClip(t *testing.T) {
 	frames, err := ExtractFrames(shortClip, nil)
@@ -18,9 +18,9 @@ func TestExtractFrames_ShortClip(t *testing.T) {
 		}
 	}()
 
-	// boat_short.mp4 is a ~2s @ 15fps clip → expect ~30 frames.
-	if len(frames) < 20 || len(frames) > 40 {
-		t.Errorf("expected ~30 frames, got %d", len(frames))
+	// kitchen.mp4 is a ~2s @ 30fps clip → expect ~61 frames.
+	if len(frames) < 45 || len(frames) > 75 {
+		t.Errorf("expected ~61 frames, got %d", len(frames))
 	}
 	if len(frames) == 0 {
 		t.Fatal("no frames extracted")

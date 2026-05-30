@@ -46,15 +46,16 @@ func TestGenerateMosaicVideo_EndToEnd(t *testing.T) {
 	if ok := cap.Read(&frame); !ok || frame.Empty() {
 		t.Fatal("could not read first frame from output mosaic")
 	}
-	// The output is cropped tight to its content box (no wide black
-	// canvas), so dimensions reflect the actual panorama, not the old
-	// padded canvas. The short clip's pan still yields a panorama clearly
-	// wider/taller than a single non-panned strip.
-	if frame.Cols() < 150 {
-		t.Errorf("mosaic narrower than expected: %d cols", frame.Cols())
+	// The output is cropped tight to its content box. Stitching panning
+	// frames must extend the canvas beyond a single frame along the pan
+	// axis, so the panorama's larger dimension clearly exceeds the source
+	// frame's smaller side. Keep this fixture-agnostic (the clip may pan
+	// horizontally or vertically).
+	if frame.Cols() <= 0 || frame.Rows() <= 0 {
+		t.Fatalf("mosaic has invalid dimensions: %dx%d", frame.Cols(), frame.Rows())
 	}
-	if frame.Rows() < 100 {
-		t.Errorf("mosaic shorter than expected: %d rows", frame.Rows())
+	if maxDim := max(frame.Cols(), frame.Rows()); maxDim < 700 {
+		t.Errorf("mosaic too small to reflect a pan: %dx%d", frame.Cols(), frame.Rows())
 	}
 	// With Y flattened and the frame cropped to its content box, most of
 	// the panorama is real content. Keep a conservative floor — enough to
