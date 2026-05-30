@@ -55,3 +55,27 @@ func TestClampInt(t *testing.T) {
 		}
 	}
 }
+
+func TestLinspace(t *testing.T) {
+	cases := []struct {
+		start, stop, count int
+		want               []int
+	}{
+		{0, 10, 0, []int{}},
+		{5, 5, 1, []int{5}},
+		{0, 10, 2, []int{0, 10}},
+		{0, 10, 3, []int{0, 5, 10}},
+		{10, 0, 3, []int{10, 5, 0}},
+	}
+	for _, tc := range cases {
+		got := linspace(tc.start, tc.stop, tc.count)
+		if len(got) != len(tc.want) {
+			t.Fatalf("linspace(%d,%d,%d) len = %d, want %d", tc.start, tc.stop, tc.count, len(got), len(tc.want))
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("linspace(%d,%d,%d)[%d] = %d, want %d", tc.start, tc.stop, tc.count, i, got[i], tc.want[i])
+			}
+		}
+	}
+}

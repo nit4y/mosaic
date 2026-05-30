@@ -31,30 +31,9 @@ func ApplyBlur(img gocv.Mat, blurResolution float64) gocv.Mat {
 	return result
 }
 
-func KeyPointsToMat(keypoints []gocv.KeyPoint) gocv.Mat {
-	points := gocv.NewMatWithSize(len(keypoints), 1, gocv.MatTypeCV32FC2)
-	for i, kp := range keypoints {
-		points.SetFloatAt(i, 0, float32(kp.X))
-		points.SetFloatAt(i, 1, float32(kp.Y))
-	}
-	return points
-}
-
-// detectCorners finds trackable corners in a grayscale image using
-// the Shi-Tomasi detector (cv::goodFeaturesToTrack). Returns a slice
-// of points and an N×1 CV_32FC2 Mat in the format expected by
-// calcOpticalFlowPyrLK.
-//
-// We use Shi-Tomasi rather than the ORB feature detector the code
-// originally used because the rest of the alignment pipeline
-// (Lucas-Kanade + RANSAC affine) is the textbook LK-tracking
-// pipeline, and Shi-Tomasi corners are the standard input it's
-// optimized for — they're more uniformly distributed across the
-// frame and produce more accurate RANSAC fits. The Python reference
-// in ref/ex4.py uses raw cornerHarris with a 1%-of-max threshold;
-// gocv doesn't expose cornerHarris, but Shi-Tomasi (the default of
-// GoodFeaturesToTrack) is closely related and the canonical OpenCV
-// choice for LK tracking.
+// detectCorners returns trackable Shi-Tomasi corners (GoodFeaturesToTrack)
+// from a grayscale image as a slice of points plus the N×1 CV_32FC2 Mat
+// that calcOpticalFlowPyrLK expects.
 func detectCorners(gray gocv.Mat, maxCorners int, quality float64, minDist float64) ([]gocv.Point2f, gocv.Mat) {
 	corners := gocv.NewMat()
 	if err := gocv.GoodFeaturesToTrack(gray, &corners, maxCorners, quality, minDist); err != nil {

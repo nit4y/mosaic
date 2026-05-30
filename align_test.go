@@ -114,3 +114,17 @@ func TestAlignImages_RecoversKnownTranslation(t *testing.T) {
 		})
 	}
 }
+
+func TestAlignImages_NoCornersReturnsNil(t *testing.T) {
+	flat := gocv.NewMatWithSize(100, 100, gocv.MatTypeCV8UC3)
+	defer flat.Close()
+	flat.SetTo(gocv.NewScalar(128, 128, 128, 0)) // uniform → no trackable corners
+	H, dir := AlignImages(flat, flat, true, DefaultConfig(), nil)
+	if H != nil {
+		H.Close()
+		t.Error("expected nil homography when no corners are found")
+	}
+	if dir != Left {
+		t.Errorf("default direction = %q, want %q", dir, Left)
+	}
+}

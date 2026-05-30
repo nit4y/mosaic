@@ -358,3 +358,14 @@ func TestPaintStrip_ClampsToBounds(t *testing.T) {
 		t.Errorf("inverted range: painted %d, want 0", got)
 	}
 }
+
+func TestBlendSeam_ClampsOutOfRange(t *testing.T) {
+	dst := makeWarped(t, 30, 10, 0, 30, 10, 10, 10)
+	left := makeWarped(t, 30, 10, 0, 30, 200, 0, 0)
+	right := makeWarped(t, 30, 10, 0, 30, 0, 0, 200)
+	defer dst.Close()
+	defer left.Close()
+	defer right.Close()
+	// Out-of-range bounds must be clamped, not panic.
+	blendSeam(dst, left, right, -5, 1000)
+}
