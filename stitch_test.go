@@ -182,7 +182,7 @@ func TestStitchPanorama_FeatherBlendsSeam(t *testing.T) {
 	// sits at x=20; with feathering the band [20,20+feather) cross-fades
 	// blue -> red instead of switching hard.
 	canvasW, canvasH := 80, 10
-	f0 := makeWarped(t, canvasW, canvasH, 0, 40, 255, 0, 0) // blue (B,G,R)
+	f0 := makeWarped(t, canvasW, canvasH, 0, 40, 255, 0, 0)  // blue (B,G,R)
 	f1 := makeWarped(t, canvasW, canvasH, 20, 40, 0, 0, 255) // red
 	frames := []gocv.Mat{f0, f1}
 	defer func() {

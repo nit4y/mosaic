@@ -1,0 +1,189 @@
+package mosaic
+
+import (
+	"image"
+	"math"
+
+	"github.com/nit4y/mosaic/internal/config"
+	"github.com/nit4y/mosaic/internal/logger"
+	"gocv.io/x/gocv"
+)
+
+// ApplyBlur downscales the image by config.BlurResolution, then upscales it
+// back to its original size, producing a simple blur.
+func ApplyBlur(img gocv.Mat) gocv.Mat {
+	h := img.Rows()
+	w := img.Cols()
+
+	// compute downscaled dimensions (at least 1×1)
+	smallW := int(math.Max(1, float64(w)*config.BlurResolution))
+	smallH := int(math.Max(1, float64(h)*config.BlurResolution))
+
+	// downscale
+	small := gocv.NewMat()
+	gocv.Resize(img, &small, image.Pt(smallW, smallH), 0, 0, gocv.InterpolationLinear)
+
+	// upscale back to original size
+	result := gocv.NewMat()
+	gocv.Resize(small, &result, image.Pt(w, h), 0, 0, gocv.InterpolationLinear)
+
+	// free intermediate Mat to avoid memory leak
+	small.Close()
+
+	return result
+}
+
+func KeyPointsToMat(keypoints []gocv.KeyPoint) gocv.Mat {
+	points := gocv.NewMatWithSize(len(keypoints), 1, gocv.MatTypeCV32FC2)
+	for i, kp := range keypoints {
+		points.SetFloatAt(i, 0, float32(kp.X))
+		points.SetFloatAt(i, 1, float32(kp.Y))
+	}
+	return points
+}
+
+// detectCorners finds trackable corners in a grayscale image using
+// the Shi-Tomasi detector (cv::goodFeaturesToTrack). Returns a slice
+// of points and an N×1 CV_32FC2 Mat in the format expected by
+// calcOpticalFlowPyrLK.
+//
+// We use Shi-Tomasi rather than the ORB feature detector the code
+// originally used because the rest of the alignment pipeline
+// (Lucas-Kanade + RANSAC affine) is the textbook LK-tracking
+// pipeline, and Shi-Tomasi corners are the standard input it's
+// optimized for — they're more uniformly distributed across the
+// frame and produce more accurate RANSAC fits. The Python reference
+// in ref/ex4.py uses raw cornerHarris with a 1%-of-max threshold;
+// gocv doesn't expose cornerHarris, but Shi-Tomasi (the default of
+// GoodFeaturesToTrack) is closely related and the canonical OpenCV
+// choice for LK tracking.
+func detectCorners(gray gocv.Mat, maxCorners int, quality float64, minDist float64) ([]gocv.Point2f, gocv.Mat) {
+	corners := gocv.NewMat()
+	if err := gocv.GoodFeaturesToTrack(gray, &corners, maxCorners, quality, minDist); err != nil {
+		corners.Close()
+		return nil, gocv.NewMat()
+	}
+	n := corners.Rows()
+	pts := make([]gocv.Point2f, n)
+	out := gocv.NewMatWithSize(n, 1, gocv.MatTypeCV32FC2)
+	for i := 0; i < n; i++ {
+		// GoodFeaturesToTrack returns Nx1 CV_32FC2; each entry is
+		// (x, y) as a 2-float vector.
+		v := corners.GetVecfAt(i, 0)
+		pts[i] = gocv.Point2f{X: v[0], Y: v[1]}
+		out.SetFloatAt(i, 0, v[0])
+		out.SetFloatAt(i, 1, v[1])
+	}
+	corners.Close()
+	return pts, out
+}
+
+// AlignImages aligns img2 to img1 using Shi-Tomasi corner detection
+// + Lucas-Kanade optical flow + RANSAC affine. Returns a 3×3
+// homogeneous Mat with horizontal-only motion (no rotation/skew, unit
+// scale, Y-damped per config) and the motion direction.
+func AlignImages(img1, img2 gocv.Mat, calcDirection bool) (*gocv.Mat, string) {
+	log := logger.WithOperation("align_images")
+
+	// convert to grayscale
+	gray1 := gocv.NewMat()
+	gray2 := gocv.NewMat()
+	defer gray1.Close()
+	defer gray2.Close()
+	gocv.CvtColor(img1, &gray1, gocv.ColorBGRToGray)
+	gocv.CvtColor(img2, &gray2, gocv.ColorBGRToGray)
+
+	// Detect Shi-Tomasi corners in gray1 — these are what
+	// Lucas-Kanade will track from frame 1 to frame 2.
+	ptsList, prevPtsMat := detectCorners(gray1, config.MaxCorners, config.CornerQuality, float64(config.CornerMinDist))
+	defer prevPtsMat.Close()
+	if len(ptsList) == 0 {
+		log.Error("No corners detected in gray1")
+		return nil, config.Left
+	}
+
+	// blur for LK stability
+	b1 := ApplyBlur(gray1)
+	b2 := ApplyBlur(gray2)
+	defer b1.Close()
+	defer b2.Close()
+
+	// allocate Mats for nextPts, status, error
+	nextPtsMat := gocv.NewMat()
+	defer nextPtsMat.Close()
+	status := gocv.NewMat()
+	defer status.Close()
+	errMat := gocv.NewMat()
+	defer errMat.Close()
+
+	// compute sparse optical flow (Lucas-Kanade)
+	gocv.CalcOpticalFlowPyrLKWithParams(
+		b1,
+		b2,
+		prevPtsMat,
+		nextPtsMat,
+		&status,
+		&errMat,
+		config.LKWinSize,
+		config.LKMaxLevel,
+		config.LKCriteria,
+		config.LKFlags,
+		config.LKMinEigThreshold,
+	)
+
+	// filter valid correspondences
+	var valid1, valid2 []gocv.Point2f
+	rows := status.Rows()
+	for i := 0; i < rows; i++ {
+		if status.GetUCharAt(i, 0) == 1 {
+			valid1 = append(valid1, ptsList[i])
+			vec := nextPtsMat.GetVecfAt(i, 0)
+			valid2 = append(valid2, gocv.Point2f{X: vec[0], Y: vec[1]})
+		}
+	}
+
+	// estimate affine partial via RANSAC
+	v1 := gocv.NewPoint2fVectorFromPoints(valid1)
+	defer v1.Close()
+	v2 := gocv.NewPoint2fVectorFromPoints(valid2)
+	defer v2.Close()
+	inliersMask := gocv.NewMat()
+	defer inliersMask.Close()
+	aff := gocv.EstimateAffinePartial2DWithParams(
+		v1,
+		v2,
+		inliersMask,
+		int(gocv.HomographyMethodRANSAC),
+		float64(config.RansacThreshold),
+		config.RansacMaxIterations,
+		config.RansacConfidence,
+		config.RansacFlag,
+	)
+	defer aff.Close()
+
+	// compute direction if needed
+	dir := config.Left
+	if calcDirection {
+		dir = CalcMotionDirection(valid1, valid2)
+	}
+
+	if aff.Empty() || aff.Rows() < 2 || aff.Cols() < 3 {
+		log.Error("Failed to estimate affine transformation",
+			"empty", aff.Empty(),
+			"rows", aff.Rows(),
+			"cols", aff.Cols())
+		return nil, dir
+	}
+
+	// convert to homogeneous (Hh shares storage with H — they are the
+	// same Mat returned by StablizeTranslation, so we close it only on
+	// the failure path).
+	H := ToHomogeneous(aff)
+	Hh := StablizeTranslation(H)
+	if Hh.Empty() {
+		log.Error("Failed to stabilize horizontal motion - empty matrix")
+		Hh.Close()
+		return nil, dir
+	}
+	return &Hh, dir
+}
