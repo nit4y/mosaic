@@ -4,7 +4,6 @@ import (
 	"math"
 	"testing"
 
-	"github.com/nit4y/mosaic/internal/config"
 	"gocv.io/x/gocv"
 )
 
@@ -67,37 +66,37 @@ func TestCalcMotionDirection(t *testing.T) {
 		name    string
 		pts1    []gocv.Point2f
 		pts2    []gocv.Point2f
-		wantDir string
+		wantDir Direction
 	}{
 		{
 			name:    "empty defaults to left",
 			pts1:    nil,
 			pts2:    nil,
-			wantDir: config.Left,
+			wantDir: Left,
 		},
 		{
 			name:    "right motion",
 			pts1:    []gocv.Point2f{{X: 0, Y: 0}, {X: 0, Y: 0}},
 			pts2:    []gocv.Point2f{{X: 10, Y: 0}, {X: 12, Y: 1}},
-			wantDir: config.Right,
+			wantDir: Right,
 		},
 		{
 			name:    "left motion",
 			pts1:    []gocv.Point2f{{X: 100, Y: 50}},
 			pts2:    []gocv.Point2f{{X: 90, Y: 51}},
-			wantDir: config.Left,
+			wantDir: Left,
 		},
 		{
 			name:    "down motion (positive Y)",
 			pts1:    []gocv.Point2f{{X: 0, Y: 0}},
 			pts2:    []gocv.Point2f{{X: 1, Y: 20}},
-			wantDir: config.Down,
+			wantDir: Down,
 		},
 		{
 			name:    "up motion (negative Y)",
 			pts1:    []gocv.Point2f{{X: 0, Y: 100}},
 			pts2:    []gocv.Point2f{{X: -1, Y: 50}},
-			wantDir: config.Up,
+			wantDir: Up,
 		},
 	}
 	for _, tc := range cases {
@@ -197,7 +196,7 @@ func TestStablizeTranslation(t *testing.T) {
 	h.SetDoubleAt(2, 1, 0)
 	h.SetDoubleAt(2, 2, 1)
 
-	out := StablizeTranslation(h)
+	out := StablizeTranslation(h, 1.0)
 	// stabilization should zero skew (0,1) and (1,0) and set diag to 1
 	if got := out.GetDoubleAt(0, 0); math.Abs(got-1.0) > 1e-9 {
 		t.Errorf("scale x = %v, want 1.0", got)
@@ -215,8 +214,8 @@ func TestStablizeTranslation(t *testing.T) {
 	if got := out.GetDoubleAt(0, 2); math.Abs(got-25) > 1e-9 {
 		t.Errorf("tx = %v, want 25", got)
 	}
-	// ty is scaled by config.YTranslationDamping (default 1.0 = no-op).
-	wantTy := -7 * config.YTranslationDamping
+	// ty is scaled by the damping passed to StablizeTranslation (1.0 = no-op).
+	wantTy := -7 * 1.0
 	if got := out.GetDoubleAt(1, 2); math.Abs(got-wantTy) > 1e-9 {
 		t.Errorf("ty = %v, want %v (damped)", got, wantTy)
 	}
@@ -232,8 +231,8 @@ func TestRotateFrameRoundTrip(t *testing.T) {
 	src.SetUCharAt(0, 1, 200)
 	src.SetUCharAt(0, 2, 200)
 
-	for _, dir := range []string{config.Left, config.Right, config.Up, config.Down} {
-		t.Run(dir, func(t *testing.T) {
+	for _, dir := range []Direction{Left, Right, Up, Down} {
+		t.Run(string(dir), func(t *testing.T) {
 			rotated := RotateFrame(src, dir)
 			defer rotated.Close()
 			restored := RotateFrameBack(rotated, dir)

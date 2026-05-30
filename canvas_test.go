@@ -144,7 +144,7 @@ func TestApplyBlur_PreservesDimensions(t *testing.T) {
 	defer src.Close()
 	src.SetTo(gocv.NewScalar(128, 0, 0, 0))
 
-	out := ApplyBlur(src)
+	out := ApplyBlur(src, 0.5)
 	defer out.Close()
 	if out.Cols() != src.Cols() || out.Rows() != src.Rows() {
 		t.Errorf("ApplyBlur dims: got %dx%d, want %dx%d",

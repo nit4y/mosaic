@@ -3,13 +3,12 @@ package mosaic
 import (
 	"math"
 
-	"github.com/nit4y/mosaic/internal/config"
 	"gocv.io/x/gocv"
 )
 
 // CalculateTransformations computes cumulative homographies aligning each frame
 // to the middle (reference) frame, then recenters them by the median vertical shift.
-func CalculateTransformations(frames []gocv.Mat, lg *Logger) ([]*gocv.Mat, int) {
+func CalculateTransformations(frames []gocv.Mat, cfg Config, lg *Logger) ([]*gocv.Mat, int) {
 	log := lg.With("operation", "calculate_transformations")
 	n := len(frames)
 	log.Info("Starting transformation calculations", "frame_count", n)
@@ -34,7 +33,7 @@ func CalculateTransformations(frames []gocv.Mat, lg *Logger) ([]*gocv.Mat, int) 
 	// 4) accumulate to the right of refIdx
 	accum := id.Clone() // running product
 	for i := refIdx + 1; i < n; i++ {
-		H, _ := AlignImages(frames[i-1], frames[i], true, lg)
+		H, _ := AlignImages(frames[i-1], frames[i], true, cfg, lg)
 		if H == nil || H.Empty() {
 			log.Error("Failed to align frames for right side", "i", i)
 			if H != nil {
@@ -62,7 +61,7 @@ func CalculateTransformations(frames []gocv.Mat, lg *Logger) ([]*gocv.Mat, int) 
 	// 5) accumulate to the left of refIdx
 	accum = id.Clone()
 	for i := refIdx - 1; i >= 0; i-- {
-		H, _ := AlignImages(frames[i+1], frames[i], false, lg)
+		H, _ := AlignImages(frames[i+1], frames[i], false, cfg, lg)
 		if H == nil || H.Empty() {
 			log.Error("Failed to align frames for left side", "i", i)
 			if H != nil {
@@ -97,7 +96,7 @@ func CalculateTransformations(frames []gocv.Mat, lg *Logger) ([]*gocv.Mat, int) 
 		if Tptr == nil {
 			continue
 		}
-		if config.FlattenVertical {
+		if cfg.FlattenVertical {
 			Tptr.SetDoubleAt(1, 2, 0)
 		} else {
 			Tptr.SetDoubleAt(1, 2, Tptr.GetDoubleAt(1, 2)-median)
