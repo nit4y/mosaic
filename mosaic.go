@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nit4y/go-panoramic-mosaic/internal/config"
-	"github.com/nit4y/go-panoramic-mosaic/internal/logger"
+	"github.com/nit4y/mosaic/internal/config"
+	"github.com/nit4y/mosaic/internal/logger"
 	"gocv.io/x/gocv"
 )
 
