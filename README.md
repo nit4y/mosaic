@@ -14,6 +14,21 @@ Turn a panning video into a wide **panoramic mosaic** — the "VideoBrush"
 strip-mosaicing technique (Peleg et al.) implemented in Go on top of
 [GoCV](https://gocv.io/) / OpenCV.
 
+## Example
+
+A panning clip in, a single wide panorama out:
+
+<table>
+  <tr>
+    <th>Input (panning video)</th>
+    <th>Output (panoramic mosaic)</th>
+  </tr>
+  <tr>
+    <td><img src="https://media2.giphy.com/media/v1.Y2lkPTc5MGI3NjExdHNnd3BwZ21xZGlpYmNtdzllZXYxeWF3dWlxYzM2Mmloam50MHQzMyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/3xlOTJXiRRgame8q6a/giphy.gif" alt="input panning video" width="380"></td>
+    <td><img src="https://media3.giphy.com/media/v1.Y2lkPTc5MGI3NjExcms3NGgwOXh2NWV3OTJmc2Nubjk0eTZ1bWZiM3UzcHE5OGo2dnIyeCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/CPBBmaFvuIvQ3l4a4e/giphy.gif" alt="output panoramic mosaic" width="380"></td>
+  </tr>
+</table>
+
 ## How it works
 
 The pipeline aligns consecutive frames and paints a panorama from thin
