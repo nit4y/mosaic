@@ -53,11 +53,12 @@ const (
 	// different frames, so a hard seam exposes every sub-pixel
 	// misalignment as "tearing" — most visible in repetitive textures.
 	// Cross-fading the seam (the classic feather blend) hides it.
-	//   0      → hard seams (no blending, the default)
-	//   ~4-8   → blends across a seam without noticeably softening detail
+	//   0      → hard seams (no blending)
+	//   ~2-8   → light-to-moderate cross-fade (2 is the default: just
+	//            enough to take the edge off seams without softening detail)
 	// Strips average a handful of pixels wide, so values much larger than
 	// the strip width simply turn the whole mosaic into a running blend.
-	FeatherWidth = 0
+	FeatherWidth = 2
 
 	// YTranslationDamping scales the per-pair vertical translation (ty) of
 	// each homography inside AlignImages. 1.0 is a no-op and the normal
