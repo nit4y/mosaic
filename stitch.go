@@ -4,7 +4,6 @@ import (
 	"image"
 
 	"github.com/nit4y/mosaic/internal/config"
-	"github.com/nit4y/mosaic/internal/logger"
 	"gocv.io/x/gocv"
 )
 
@@ -209,8 +208,9 @@ func StitchPanorama(
 	canvasWidth,
 	canvasHeight,
 	frameXOffset int,
+	lg *Logger,
 ) gocv.Mat {
-	return stitchPanorama(videoName, warpedFrames, canvasWidth, canvasHeight, frameXOffset, config.FeatherWidth)
+	return stitchPanorama(videoName, warpedFrames, canvasWidth, canvasHeight, frameXOffset, config.FeatherWidth, lg)
 }
 
 // stitchPanorama is the core stitcher. `feather` is the seam cross-fade
@@ -224,8 +224,9 @@ func stitchPanorama(
 	canvasHeight,
 	frameXOffset int,
 	feather int,
+	lg *Logger,
 ) gocv.Mat {
-	log := logger.WithVideo(videoName)
+	log := lg.With("video", videoName)
 	log.Info("Starting panorama stitching",
 		"frame_count", len(warpedFrames),
 		"canvas_width", canvasWidth,
