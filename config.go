@@ -103,7 +103,7 @@ func DefaultConfig() Config {
 		MinimalPixelColumnIndex: 10,
 
 		FlattenVertical:     false,
-		YTranslationDamping: 1.0,
+		YTranslationDamping: 0.1,
 
 		FeatherWidth:      2,
 		CropToCoveredBand: false,
