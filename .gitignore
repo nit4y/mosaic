@@ -38,3 +38,5 @@ go.work.sum
 gocv
 install_deps.sh
 rebuild_opencv.sh
+# Local sample input videos (used for manual runs, not tracked)
+input/
