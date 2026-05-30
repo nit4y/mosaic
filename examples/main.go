@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/nit4y/go-panoramic-mosaic/internal/logger"
-	"github.com/nit4y/go-panoramic-mosaic/internal/mosaic"
+	"github.com/nit4y/mosaic"
+	"github.com/nit4y/mosaic/internal/logger"
 )
 
 func main() {
