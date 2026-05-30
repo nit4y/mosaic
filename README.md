@@ -21,7 +21,7 @@ A panning clip in, a single wide panorama out:
 **Input** — a panning video:
 
 <p align="center">
-  <img src="https://media2.giphy.com/media/v1.Y2lkPTc5MGI3NjExdWY3b3A4emFkcXdwcDR1Y2VpZXV2eXJudmEzd2FicGxhZDhpa2NzeCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/3xlOTJXiRRgame8q6a/giphy.gif" alt="input panning video" width="640">
+  <img src="https://media3.giphy.com/media/v1.Y2lkPTc5MGI3NjExMWV1cW0yMTZ6bGJxaHNwNHE4bWR5MW9sMTFrNmp3ODBlMnBvYnFxaCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/wDRCa9PrISLu4qluLH/giphy.gif" alt="input panning video" width="640">
 </p>
 
 **Output** — the panoramic mosaic:
