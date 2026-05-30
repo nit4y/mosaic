@@ -116,7 +116,7 @@ func TestTightenToCoveredBand(t *testing.T) {
 	botWedge.Close()
 	defer m.Close()
 
-	got := tightenToCoveredBand([]resJob{{idx: 0, mat: m}}, image.Rect(0, 0, 100, 30))
+	got := tightenToCoveredBand([]resJob{{idx: 0, mat: m}}, image.Rect(0, 0, 100, 30), 0.97)
 	want := image.Rect(0, 5, 100, 25)
 	if got != want {
 		t.Errorf("tightenToCoveredBand = %v, want %v (wedge rows should be dropped)", got, want)
@@ -137,7 +137,7 @@ func TestBuildSequence_StaticIsPingPong(t *testing.T) {
 		}
 	}()
 
-	frames, cleanup := buildSequence(panoramas, Static)
+	frames, cleanup := buildSequence(panoramas, Static, DefaultConfig())
 	defer cleanup()
 
 	wantIdx := []int{0, 1, 2, 2, 1, 0}
@@ -163,7 +163,7 @@ func TestBuildSequence_DynamicCropsForward(t *testing.T) {
 		}
 	}()
 
-	frames, cleanup := buildSequence(panoramas, Dynamic)
+	frames, cleanup := buildSequence(panoramas, Dynamic, DefaultConfig())
 	defer cleanup()
 
 	// Forward only, one frame per panorama.

@@ -14,14 +14,18 @@ func main() {
 	slogger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	lg := mosaic.NewLogger(slogger, true) // verbose: emit pipeline logs
 
+	// Start from the tuned defaults and override only what you need, e.g.:
+	//	cfg.Dynamic ... cfg.FeatherWidth = 4
+	cfg := mosaic.DefaultConfig()
+
 	// Generate a static (ping-pong) panoramic mosaic for every video in
-	// the "input" directory, written under "output/<video>/static.mp4".
+	// cfg.InputDir, written under cfg.OutputDir/<video>/static.mp4.
 	//
 	// Dynamic ("video brush") mosaics are disabled by default. To produce
 	// them, call:
 	//
-	//	mosaic.GenerateVideosFromDir("input", "output", mosaic.Dynamic, lg)
-	if err := mosaic.GenerateVideos(lg); err != nil {
+	//	mosaic.GenerateVideosFromDir(cfg.InputDir, cfg.OutputDir, mosaic.Dynamic, cfg, lg)
+	if err := mosaic.GenerateVideos(cfg, lg); err != nil {
 		slogger.Error("failed to generate static mosaics", "error", err)
 		return
 	}

@@ -1,24 +1,21 @@
 package mosaic
 
-import (
-	"github.com/nit4y/mosaic/internal/config"
-	"gocv.io/x/gocv"
-)
+import "gocv.io/x/gocv"
 
 // RotateFrame rotates a frame to align motion to the right.
-func RotateFrame(frame gocv.Mat, direction string) gocv.Mat {
+func RotateFrame(frame gocv.Mat, direction Direction) gocv.Mat {
 	var rotated gocv.Mat
 	switch direction {
-	case config.Right:
+	case Right:
 		rotated = gocv.NewMat()
 		gocv.Rotate(frame, &rotated, gocv.Rotate180Clockwise)
-	case config.Left:
+	case Left:
 		// no rotation
 		rotated = frame.Clone()
-	case config.Up:
+	case Up:
 		rotated = gocv.NewMat()
 		gocv.Rotate(frame, &rotated, gocv.Rotate90Clockwise)
-	case config.Down:
+	case Down:
 		rotated = gocv.NewMat()
 		gocv.Rotate(frame, &rotated, gocv.Rotate90CounterClockwise)
 	default:
@@ -28,18 +25,18 @@ func RotateFrame(frame gocv.Mat, direction string) gocv.Mat {
 }
 
 // RotateFrameBack reverts rotation applied for alignment.
-func RotateFrameBack(frame gocv.Mat, direction string) gocv.Mat {
+func RotateFrameBack(frame gocv.Mat, direction Direction) gocv.Mat {
 	var original gocv.Mat
 	switch direction {
-	case config.Right:
+	case Right:
 		original = gocv.NewMat()
 		gocv.Rotate(frame, &original, gocv.Rotate180Clockwise)
-	case config.Left:
+	case Left:
 		original = frame.Clone()
-	case config.Up:
+	case Up:
 		original = gocv.NewMat()
 		gocv.Rotate(frame, &original, gocv.Rotate90CounterClockwise)
-	case config.Down:
+	case Down:
 		original = gocv.NewMat()
 		gocv.Rotate(frame, &original, gocv.Rotate90Clockwise)
 	default:
@@ -49,13 +46,13 @@ func RotateFrameBack(frame gocv.Mat, direction string) gocv.Mat {
 }
 
 // DetectMotionDirection detects the dominant motion direction in a video.
-func DetectMotionDirection(frames []gocv.Mat, lg *Logger) string {
+func DetectMotionDirection(frames []gocv.Mat, cfg Config, lg *Logger) Direction {
 	// vote with motion of first 5 frames relative to the first frame
-	votes := map[string]int{
-		config.Left:  0,
-		config.Right: 0,
-		config.Up:    0,
-		config.Down:  0,
+	votes := map[Direction]int{
+		Left:  0,
+		Right: 0,
+		Up:    0,
+		Down:  0,
 	}
 	// limited to available frames
 	limit := 6
@@ -63,11 +60,11 @@ func DetectMotionDirection(frames []gocv.Mat, lg *Logger) string {
 		limit = len(frames)
 	}
 	for i := 1; i < limit; i++ {
-		_, dir := AlignImages(frames[0], frames[i], true, lg)
+		_, dir := AlignImages(frames[0], frames[i], true, cfg, lg)
 		votes[dir]++
 	}
 	// find direction with highest votes
-	bestDir := config.Left
+	bestDir := Left
 	maxVotes := -1
 	for dir, count := range votes {
 		if count > maxVotes {

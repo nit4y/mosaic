@@ -3,7 +3,6 @@ package mosaic
 import (
 	"image"
 
-	"github.com/nit4y/mosaic/internal/config"
 	"gocv.io/x/gocv"
 )
 
@@ -208,9 +207,10 @@ func StitchPanorama(
 	canvasWidth,
 	canvasHeight,
 	frameXOffset int,
+	cfg Config,
 	lg *Logger,
 ) gocv.Mat {
-	return stitchPanorama(videoName, warpedFrames, canvasWidth, canvasHeight, frameXOffset, config.FeatherWidth, lg)
+	return stitchPanorama(videoName, warpedFrames, canvasWidth, canvasHeight, frameXOffset, cfg.FeatherWidth, lg)
 }
 
 // stitchPanorama is the core stitcher. `feather` is the seam cross-fade
