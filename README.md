@@ -1,4 +1,8 @@
-# mosaic
+<p align="center">
+  <img src="assets/logo.png" alt="mosaic logo" width="240">
+</p>
+
+<h1 align="center">mosaic</h1>
 
 [![CI](https://github.com/nit4y/mosaic/actions/workflows/ci.yml/badge.svg)](https://github.com/nit4y/mosaic/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/nit4y/mosaic.svg)](https://pkg.go.dev/github.com/nit4y/mosaic)
