@@ -32,17 +32,23 @@ const (
 	// weakest).
 	MinimalPixelColumnIndex = 10
 
-	// EdgeStripWidth bounded the synthetic leading/trailing strips in the
-	// old stitcher. Retained until the stitcher is reworked.
-	EdgeStripWidth = 64
+	// FlattenVertical controls the panorama's vertical layout, applied once
+	// to the accumulated transforms (not to per-pair alignment, which must
+	// keep recovering true translation).
+	//   true  → zero the accumulated vertical translation, so every frame
+	//           sits in one horizontal band. Keeps the canvas ~one frame
+	//           tall instead of staircasing into the diagonal black wedges
+	//           that give the output its "smeared edge" look (see
+	//           scripts/compare_mosaics.sh vs the flattened school ref).
+	//   false → re-center frames on the median vertical drift, preserving
+	//           genuine vertical camera motion (taller, wedge-prone canvas).
+	// Default true: the target footage is a horizontal pan.
+	FlattenVertical = true
 
-	// YTranslationDamping scales the per-pair vertical translation (ty)
-	// of each homography before accumulation.
-	//   1.0 → keep ty as-is (preserve real vertical motion)
-	//   0.0 → fully remove ty (panorama stays at a constant y)
-	// A horizontal pan mosaic wants this low: undamped ty accumulates into
-	// large vertical drift, inflating the canvas with diagonal black
-	// wedges. See scripts/compare_mosaics.sh output vs the reference.
+	// YTranslationDamping scales the per-pair vertical translation (ty) of
+	// each homography inside AlignImages. 1.0 is a no-op and the normal
+	// value; it exists only as an advanced knob. Use FlattenVertical to
+	// control panorama vertical layout — that is the right layer for it.
 	YTranslationDamping = 1.0
 
 	// Output settings. Total output frames = OutputFPS * OutputLengthInSeconds.

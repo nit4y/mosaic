@@ -435,16 +435,22 @@ func CalculateTransformations(frames []gocv.Mat) ([]*gocv.Mat, int) {
 	}
 	accum.Close()
 
-	// 6) compute median of the vertical translations
+	// 6) Vertical layout. By default we flatten the panorama: a
+	// horizontal-pan mosaic should sit in one band, so the accumulated
+	// vertical translation is zeroed. That keeps the canvas ~one frame tall
+	// instead of staircasing into diagonal black wedges. With
+	// FlattenVertical=false we instead re-center on the median vertical
+	// drift, preserving genuine vertical motion.
 	median := Median(yTranslations)
-
-	// 7) subtract median from each transform’s ty (element [1,2])
 	for _, Tptr := range transforms {
 		if Tptr == nil {
 			continue
 		}
-		ty := Tptr.GetDoubleAt(1, 2) - median
-		Tptr.SetDoubleAt(1, 2, ty)
+		if config.FlattenVertical {
+			Tptr.SetDoubleAt(1, 2, 0)
+		} else {
+			Tptr.SetDoubleAt(1, 2, Tptr.GetDoubleAt(1, 2)-median)
+		}
 	}
 
 	log.Info("Finished calculating transformations", "ref_index", refIdx)
@@ -693,12 +699,12 @@ func clampInt(v, min, max int) int {
 // mosaics it is typically a small constant (e.g.
 // config.MinimalPixelColumnIndex).
 //
-// Caveat (matches the Python reference): the trailing frame's strip
-// is intentionally not painted because there is no next frame to
-// bound it. We also paint a final tail strip from the last frame
-// using its full content width — this is a small, deliberate
-// extension over the Python so the rightmost ~frame_width of the
-// canvas isn't always black.
+// We paint NO synthetic leading/trailing strips. The old code stretched
+// the first/last frame across empty canvas to avoid black edges, which is
+// exactly what produced the visible edge smear. The black margins left
+// here (and the last frame's unpainted body) are removed downstream by
+// cropping every panorama to the common content box (see buildSequence),
+// giving clean rectangular edges instead of a smear.
 func StitchPanorama(
 	videoName string,
 	warpedFrames []gocv.Mat,
@@ -717,12 +723,8 @@ func StitchPanorama(
 	canvas := gocv.NewMatWithSize(canvasHeight, canvasWidth, gocv.MatTypeCV8UC3)
 	canvas.SetTo(gocv.NewScalar(0, 0, 0, 0))
 
-	if len(warpedFrames) == 0 {
-		return canvas
-	}
-
-	var firstWarped, prevWarped *gocv.Mat
-	firstLeftmostX, prevLeftmostX := 0, 0
+	var prevWarped *gocv.Mat
+	prevLeftmostX := 0
 
 	for i := range warpedFrames {
 		warped := &warpedFrames[i]
@@ -731,7 +733,7 @@ func StitchPanorama(
 		}
 		currLeftmostX := leftmostNonBlackColumn(*warped)
 		if currLeftmostX < 0 {
-			// frame is entirely black — skip without disturbing
+			// Frame is entirely black — skip without disturbing
 			// prev/cur tracking, so the next non-black frame still
 			// pairs with the right predecessor.
 			continue
@@ -739,38 +741,9 @@ func StitchPanorama(
 
 		if prevWarped != nil {
 			paintStrip(canvas, *prevWarped, prevLeftmostX+frameXOffset, currLeftmostX+frameXOffset)
-		} else {
-			// First non-empty frame seen — remember it for the
-			// leading strip painted after the loop.
-			firstWarped = warped
-			firstLeftmostX = currLeftmostX
 		}
 		prevWarped = warped
 		prevLeftmostX = currLeftmostX
-	}
-
-	// Leading strip: paint up to EdgeStripWidth cols immediately to
-	// the left of the first regular strip. We deliberately *don't*
-	// paint all the way to canvas col 0 — those cols are outside
-	// any frame's content and stretching frame 0 across them just
-	// produces a smeared edge.
-	if firstWarped != nil {
-		lEnd := firstLeftmostX + frameXOffset
-		lStart := lEnd - config.EdgeStripWidth
-		if lStart < 0 {
-			lStart = 0
-		}
-		paintStrip(canvas, *firstWarped, lStart, lEnd)
-	}
-	// Tail strip: paint up to EdgeStripWidth cols immediately to
-	// the right of the last regular strip.
-	if prevWarped != nil {
-		tStart := prevLeftmostX + frameXOffset
-		tEnd := tStart + config.EdgeStripWidth
-		if tEnd > canvas.Cols() {
-			tEnd = canvas.Cols()
-		}
-		paintStrip(canvas, *prevWarped, tStart, tEnd)
 	}
 
 	log.Info("Completed panorama stitching")

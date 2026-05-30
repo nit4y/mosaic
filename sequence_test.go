@@ -58,8 +58,7 @@ func TestContentRect(t *testing.T) {
 		want := image.Rect(10, 5, 30, 15)
 		m := blackWithContent(100, 40, want)
 		defer m.Close()
-		got := contentRect(m)
-		if got != want {
+		if got := contentRect(m); got != want {
 			t.Errorf("contentRect = %v, want %v", got, want)
 		}
 	})
@@ -67,51 +66,41 @@ func TestContentRect(t *testing.T) {
 		m := gocv.NewMatWithSize(20, 50, gocv.MatTypeCV8UC3)
 		m.SetTo(gocv.NewScalar(0, 0, 0, 0))
 		defer m.Close()
-		got := contentRect(m)
 		want := image.Rect(0, 0, 50, 20)
-		if got != want {
+		if got := contentRect(m); got != want {
 			t.Errorf("contentRect(all black) = %v, want full %v", got, want)
 		}
 	})
-	t.Run("empty returns zero-size full", func(t *testing.T) {
+	t.Run("empty returns zero rect", func(t *testing.T) {
 		m := gocv.NewMat()
 		defer m.Close()
-		got := contentRect(m)
-		if got != image.Rect(0, 0, 0, 0) {
+		if got := contentRect(m); got != image.Rect(0, 0, 0, 0) {
 			t.Errorf("contentRect(empty) = %v, want zero rect", got)
 		}
 	})
 }
 
-func TestPadToCommonSize(t *testing.T) {
-	small := solidMat(20, 10, 50, 60, 70)
-	big := solidMat(40, 30, 80, 90, 100)
-	defer small.Close()
-	defer big.Close()
-
-	out := padToCommonSize([]gocv.Mat{small, big})
+func TestCommonContentRect(t *testing.T) {
+	panoramas := []resJob{
+		{idx: 0, mat: blackWithContent(100, 40, image.Rect(10, 5, 30, 25))},
+		{idx: 1, mat: blackWithContent(100, 40, image.Rect(0, 0, 50, 15))},
+	}
 	defer func() {
-		for _, m := range out {
-			m.Close()
+		for _, p := range panoramas {
+			p.mat.Close()
 		}
 	}()
 
-	for i, m := range out {
-		if m.Cols() != 40 || m.Rows() != 30 {
-			t.Fatalf("frame %d: got %dx%d, want 40x30", i, m.Cols(), m.Rows())
-		}
-	}
-	// small's content preserved at top-left, no distortion.
-	if v := out[0].GetVecbAt(0, 0); v[0] != 50 || v[1] != 60 || v[2] != 70 {
-		t.Errorf("small top-left = %v, want [50 60 70]", v)
-	}
-	// padding region (bottom-right beyond small's 20x10) is black.
-	if v := out[0].GetVecbAt(20, 30); v[0] != 0 || v[1] != 0 || v[2] != 0 {
-		t.Errorf("small padding = %v, want black", v)
+	got := commonContentRect(panoramas)
+	want := image.Rect(0, 0, 50, 25) // union of the two content boxes
+	if got != want {
+		t.Errorf("commonContentRect = %v, want %v", got, want)
 	}
 }
 
 func TestBuildSequence_StaticIsPingPong(t *testing.T) {
+	// Fully-colored panoramas (no black), so cropping is a no-op and we can
+	// focus on the ping-pong ordering.
 	panoramas := []resJob{
 		{idx: 0, mat: solidMat(4, 4, 1, 0, 0)},
 		{idx: 1, mat: solidMat(4, 4, 2, 0, 0)},
@@ -137,11 +126,11 @@ func TestBuildSequence_StaticIsPingPong(t *testing.T) {
 	}
 }
 
-func TestBuildSequence_DynamicTrimsPadsForward(t *testing.T) {
-	// Two canvas-sized panoramas with differently-sized content regions.
+func TestBuildSequence_DynamicCropsForward(t *testing.T) {
+	// Two canvas-sized panoramas with differently-placed content boxes.
 	panoramas := []resJob{
-		{idx: 0, mat: blackWithContent(100, 40, image.Rect(10, 5, 30, 25))},  // 20x20
-		{idx: 1, mat: blackWithContent(100, 40, image.Rect(0, 0, 50, 15))},   // 50x15
+		{idx: 0, mat: blackWithContent(100, 40, image.Rect(10, 5, 30, 25))},
+		{idx: 1, mat: blackWithContent(100, 40, image.Rect(0, 0, 50, 15))},
 	}
 	defer func() {
 		for _, p := range panoramas {
@@ -156,14 +145,18 @@ func TestBuildSequence_DynamicTrimsPadsForward(t *testing.T) {
 	if len(frames) != 2 {
 		t.Fatalf("dynamic sequence len = %d, want 2", len(frames))
 	}
-	// All frames padded to the common max content size: max(20,50) x max(20,15) = 50x20.
+	// All frames cropped to the common content box: union = 50x25.
 	for i, f := range frames {
-		if f.mat.Cols() != 50 || f.mat.Rows() != 20 {
-			t.Errorf("frame %d: got %dx%d, want 50x20", i, f.mat.Cols(), f.mat.Rows())
+		if f.mat.Cols() != 50 || f.mat.Rows() != 25 {
+			t.Errorf("frame %d: got %dx%d, want 50x25", i, f.mat.Cols(), f.mat.Rows())
 		}
 	}
-	// First frame's trimmed content (white) should be present at its top-left.
-	if v := frames[0].mat.GetVecbAt(0, 0); v[0] != 255 {
-		t.Errorf("dynamic frame0 top-left = %v, want white content", v)
+	// Frame 0's white content (orig rect 10,5..30,25) sits at the same
+	// place inside the cropped frame (crop origin is 0,0).
+	if v := frames[0].mat.GetVecbAt(5, 10); v[0] != 255 {
+		t.Errorf("dynamic frame0 (5,10) = %v, want white content", v)
+	}
+	if v := frames[0].mat.GetVecbAt(0, 0); v[0] != 0 {
+		t.Errorf("dynamic frame0 (0,0) = %v, want black margin", v)
 	}
 }

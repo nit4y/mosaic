@@ -46,20 +46,20 @@ func TestGenerateMosaicVideo_EndToEnd(t *testing.T) {
 	if ok := cap.Read(&frame); !ok || frame.Empty() {
 		t.Fatal("could not read first frame from output mosaic")
 	}
-	// Sanity: panorama should be wider than the source frame width
-	// (640) — otherwise no panning was captured.
-	if frame.Cols() < 700 {
+	// The output is cropped tight to its content box (no wide black
+	// canvas), so dimensions reflect the actual panorama, not the old
+	// padded canvas. The short clip's pan still yields a panorama clearly
+	// wider/taller than a single non-panned strip.
+	if frame.Cols() < 150 {
 		t.Errorf("mosaic narrower than expected: %d cols", frame.Cols())
 	}
-	if frame.Rows() < 400 {
+	if frame.Rows() < 100 {
 		t.Errorf("mosaic shorter than expected: %d rows", frame.Rows())
 	}
-	// A non-trivial fraction of the panorama should be non-black. The
-	// canvas legitimately has black corners where Y drift placed
-	// frames at varying y positions, so we use a low threshold —
-	// just enough to catch the historical "mostly-black mosaic" bug
-	// (<10% painted). 25% is comfortably above what bounded edge
-	// strips + Y drift produces on the short clip.
+	// With Y flattened and the frame cropped to its content box, most of
+	// the panorama is real content. Keep a conservative floor — enough to
+	// catch the historical "mostly-black mosaic" bug without over-fitting
+	// to the exact coverage of the short clip.
 	step := 16
 	nonBlack, total := 0, 0
 	for y := 0; y < frame.Rows(); y += step {
