@@ -27,5 +27,11 @@ go.work.sum
 .vscode
 
 *.mp4
+!internal/mosaic/testdata/*.mp4
 
 *.jpg
+!internal/mosaic/testdata/*.jpg
+
+gocv
+install_deps.sh
+rebuild_opencv.sh
