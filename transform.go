@@ -7,8 +7,10 @@ import (
 )
 
 // calculateTransformations computes cumulative homographies aligning each frame
-// to the middle (reference) frame, then recenters them by the median vertical shift.
-func calculateTransformations(frames []gocv.Mat, cfg Config, lg *Logger) ([]*gocv.Mat, int) {
+// to the middle (reference) frame, then recenters them by the median vertical
+// shift. Every returned Mat is owned by the caller and must be closed; a frame
+// that could not be aligned is left as an empty Mat (check with Mat.Empty).
+func calculateTransformations(frames []gocv.Mat, cfg Config, lg *Logger) ([]gocv.Mat, int) {
 	log := lg.With("operation", "calculate_transformations")
 	n := len(frames)
 	log.Info("Starting transformation calculations", "frame_count", n)
@@ -22,65 +24,47 @@ func calculateTransformations(frames []gocv.Mat, cfg Config, lg *Logger) ([]*goc
 	refIdx := n / 2
 
 	// 2) allocate output slice
-	transforms := make([]*gocv.Mat, n)
+	transforms := make([]gocv.Mat, n)
 	yTranslations := make([]float64, 0, n)
 
 	// 3) identity homography for the reference frame
-	id := gocv.Eye(3, 3, gocv.MatTypeCV64F)
-	transforms[refIdx] = &id
+	transforms[refIdx] = gocv.Eye(3, 3, gocv.MatTypeCV64F)
 	yTranslations = append(yTranslations, 0.0)
 
 	// 4) accumulate to the right of refIdx
-	accum := id.Clone() // running product
+	accum := transforms[refIdx].Clone() // running product
 	for i := refIdx + 1; i < n; i++ {
 		H, _ := alignImages(frames[i-1], frames[i], true, cfg, lg)
-		if H == nil || H.Empty() {
+		if H.Empty() {
 			log.Error("Failed to align frames for right side", "i", i)
-			if H != nil {
-				H.Close()
-			}
-			// Keep transforms[i] = nil; downstream code must guard.
+			H.Close()
+			transforms[i] = gocv.NewMat() // empty placeholder; downstream skips it
 			continue
 		}
-		// accum = accum @ H
-		tmp := gocv.NewMat()
-		emptyC := gocv.NewMat()
-		gocv.Gemm(accum, *H, 1.0, emptyC, 0.0, &tmp, 0)
-		emptyC.Close()
+		next := matMul(accum, H) // accum = accum @ H
 		accum.Close()
 		H.Close()
-		accum = tmp
-
-		// clone for output
-		cl := accum.Clone()
-		transforms[i] = &cl
+		accum = next
+		transforms[i] = accum.Clone()
 		yTranslations = append(yTranslations, accum.GetDoubleAt(1, 2))
 	}
 	accum.Close() // release the right-side running product before reusing the name
 
 	// 5) accumulate to the left of refIdx
-	accum = id.Clone()
+	accum = transforms[refIdx].Clone()
 	for i := refIdx - 1; i >= 0; i-- {
 		H, _ := alignImages(frames[i+1], frames[i], false, cfg, lg)
-		if H == nil || H.Empty() {
+		if H.Empty() {
 			log.Error("Failed to align frames for left side", "i", i)
-			if H != nil {
-				H.Close()
-			}
+			H.Close()
+			transforms[i] = gocv.NewMat()
 			continue
 		}
-		// accum = H @ accum
-		tmp := gocv.NewMat()
-		emptyC := gocv.NewMat()
-		gocv.Gemm(*H, accum, 1.0, emptyC, 0.0, &tmp, 0)
-		emptyC.Close()
+		next := matMul(H, accum) // accum = H @ accum
 		accum.Close()
 		H.Close()
-		accum = tmp
-
-		// insert at transforms[i]
-		cl := accum.Clone()
-		transforms[i] = &cl
+		accum = next
+		transforms[i] = accum.Clone()
 		yTranslations = append([]float64{accum.GetDoubleAt(1, 2)}, yTranslations...)
 	}
 	accum.Close()
@@ -92,14 +76,14 @@ func calculateTransformations(frames []gocv.Mat, cfg Config, lg *Logger) ([]*goc
 	// FlattenVertical=false we instead re-center on the median vertical
 	// drift, preserving genuine vertical motion.
 	medianY := median(yTranslations)
-	for _, Tptr := range transforms {
-		if Tptr == nil {
+	for i := range transforms {
+		if transforms[i].Empty() {
 			continue
 		}
 		if cfg.FlattenVertical {
-			Tptr.SetDoubleAt(1, 2, 0)
+			transforms[i].SetDoubleAt(1, 2, 0)
 		} else {
-			Tptr.SetDoubleAt(1, 2, Tptr.GetDoubleAt(1, 2)-medianY)
+			transforms[i].SetDoubleAt(1, 2, transforms[i].GetDoubleAt(1, 2)-medianY)
 		}
 	}
 
@@ -107,10 +91,21 @@ func calculateTransformations(frames []gocv.Mat, cfg Config, lg *Logger) ([]*goc
 	return transforms, refIdx
 }
 
+// matMul returns the matrix product a @ b as a new Mat (caller owns it). It
+// wraps the gocv.Gemm boilerplate so the accumulation loops above read as plain
+// matrix algebra.
+func matMul(a, b gocv.Mat) gocv.Mat {
+	product := gocv.NewMat()
+	beta := gocv.NewMat() // unused C term (beta = 0)
+	gocv.Gemm(a, b, 1.0, beta, 0.0, &product, 0)
+	beta.Close()
+	return product
+}
+
 // calculateCanvasSize returns the canvas width and height needed to hold every
 // transformed frame, plus the x/y offsets that shift the inverted transforms so
 // the leftmost/topmost frame lands at the canvas origin.
-func calculateCanvasSize(frames []gocv.Mat, transforms []*gocv.Mat, refIndex int, lg *Logger) (int, int, int, int) {
+func calculateCanvasSize(frames []gocv.Mat, transforms []gocv.Mat, refIndex int, lg *Logger) (int, int, int, int) {
 	log := lg.With("operation", "calculate_canvas_size")
 	log.Info("Calculating canvas dimensions", "reference_frame", refIndex)
 
@@ -122,28 +117,22 @@ func calculateCanvasSize(frames []gocv.Mat, transforms []*gocv.Mat, refIndex int
 	// Calculate the maximum translation in each direction
 	var minX, maxX, minY, maxY float64
 	for i, transform := range transforms {
-		if i == refIndex || transform == nil {
+		if i == refIndex || transform.Empty() {
 			continue
 		}
 
-		// Check if matrix is valid
-		if (*transform).Empty() {
-			log.Warn("Empty transformation matrix", "frame", i)
-			continue
-		}
-
-		// Get translation components with error checking
-		if (*transform).Rows() < 2 || (*transform).Cols() < 3 {
+		// Skip malformed transforms rather than index out of range below.
+		if transform.Rows() < 2 || transform.Cols() < 3 {
 			log.Error("Invalid transformation matrix dimensions",
 				"frame", i,
-				"rows", (*transform).Rows(),
-				"cols", (*transform).Cols())
+				"rows", transform.Rows(),
+				"cols", transform.Cols())
 			continue
 		}
 
 		// Get translation components
-		tx := (*transform).GetDoubleAt(0, 2)
-		ty := (*transform).GetDoubleAt(1, 2)
+		tx := transform.GetDoubleAt(0, 2)
+		ty := transform.GetDoubleAt(1, 2)
 
 		log.Debug("Frame translation",
 			"frame", i,

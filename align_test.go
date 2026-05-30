@@ -94,8 +94,8 @@ func TestAlignImages_RecoversKnownTranslation(t *testing.T) {
 			defer img2.Close()
 
 			H, _ := alignImages(img1, img2, false, DefaultConfig(), nil)
-			if H == nil {
-				t.Fatal("alignImages returned nil homography")
+			if H.Empty() {
+				t.Fatal("alignImages returned an empty homography")
 			}
 			defer H.Close()
 
@@ -115,14 +115,14 @@ func TestAlignImages_RecoversKnownTranslation(t *testing.T) {
 	}
 }
 
-func TestAlignImages_NoCornersReturnsNil(t *testing.T) {
+func TestAlignImages_NoCornersReturnsEmpty(t *testing.T) {
 	flat := gocv.NewMatWithSize(100, 100, gocv.MatTypeCV8UC3)
 	defer flat.Close()
 	flat.SetTo(gocv.NewScalar(128, 128, 128, 0)) // uniform → no trackable corners
 	H, dir := alignImages(flat, flat, true, DefaultConfig(), nil)
-	if H != nil {
-		H.Close()
-		t.Error("expected nil homography when no corners are found")
+	defer H.Close()
+	if !H.Empty() {
+		t.Error("expected an empty homography when no corners are found")
 	}
 	if dir != Left {
 		t.Errorf("default direction = %q, want %q", dir, Left)

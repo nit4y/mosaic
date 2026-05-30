@@ -9,14 +9,14 @@ import (
 
 // makeTransform builds a 3x3 affine-like homography Mat with the given
 // translation (tx, ty). Identity-scale, no skew.
-func makeTransform(tx, ty float64) *gocv.Mat {
+func makeTransform(tx, ty float64) gocv.Mat {
 	m := gocv.NewMatWithSize(3, 3, gocv.MatTypeCV64F)
 	m.SetDoubleAt(0, 0, 1)
 	m.SetDoubleAt(1, 1, 1)
 	m.SetDoubleAt(2, 2, 1)
 	m.SetDoubleAt(0, 2, tx)
 	m.SetDoubleAt(1, 2, ty)
-	return &m
+	return m
 }
 
 func TestCalculateCanvasSize_ExpandsBounds(t *testing.T) {
@@ -33,7 +33,7 @@ func TestCalculateCanvasSize_ExpandsBounds(t *testing.T) {
 	t2 := makeTransform(30, 0)
 	defer t2.Close()
 
-	w, h, xOff, yOff := calculateCanvasSize(frames, []*gocv.Mat{t0, t1, t2}, 1, nil)
+	w, h, xOff, yOff := calculateCanvasSize(frames, []gocv.Mat{t0, t1, t2}, 1, nil)
 
 	// width = (maxX - minX) + frameW = (30 - -10) + 100 = 140
 	if w != 140 {
@@ -69,7 +69,7 @@ func TestCalculateCanvasSize_BothNegativeAndPositiveY(t *testing.T) {
 	t2 := makeTransform(30, 8) // down
 	defer t2.Close()
 
-	_, h, _, yOff := calculateCanvasSize(frames, []*gocv.Mat{t0, t1, t2}, 1, nil)
+	_, h, _, yOff := calculateCanvasSize(frames, []gocv.Mat{t0, t1, t2}, 1, nil)
 	if h != 13+50 {
 		t.Errorf("canvas height = %d, want 63", h)
 	}
@@ -78,7 +78,7 @@ func TestCalculateCanvasSize_BothNegativeAndPositiveY(t *testing.T) {
 	}
 }
 
-func TestCalculateCanvasSize_SkipsNilAndEmpty(t *testing.T) {
+func TestCalculateCanvasSize_SkipsEmpty(t *testing.T) {
 	frame := gocv.NewMatWithSize(20, 40, gocv.MatTypeCV8UC3)
 	defer frame.Close()
 	frames := []gocv.Mat{frame, frame, frame}
@@ -87,11 +87,10 @@ func TestCalculateCanvasSize_SkipsNilAndEmpty(t *testing.T) {
 	defer t0.Close()
 	empty := gocv.NewMat() // empty Mat — should be skipped
 	defer empty.Close()
-	emptyPtr := &empty
 	t2 := makeTransform(-20, 0)
 	defer t2.Close()
 
-	transforms := []*gocv.Mat{t0, emptyPtr, t2}
+	transforms := []gocv.Mat{t0, empty, t2}
 	w, _, xOff, _ := calculateCanvasSize(frames, transforms, 1, nil)
 
 	// minX = -20, maxX = 50 → width = 70 + 40 = 110.

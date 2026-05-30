@@ -63,23 +63,25 @@ func detectMotionDirection(frames []gocv.Mat, cfg Config, lg *Logger) Direction 
 	}
 	for i := 1; i < limit; i++ {
 		// We only need the direction here, but alignImages also returns a
-		// homography Mat — close it so it isn't leaked.
+		// homography Mat (empty on failure) — close it so it isn't leaked.
 		H, dir := alignImages(frames[0], frames[i], true, cfg, lg)
-		if H != nil {
-			H.Close()
-		}
+		H.Close()
 		votes[dir]++
 	}
-	// Pick the winner over a fixed candidate order so ties break
-	// deterministically — ranging a map would randomise the result and make
-	// the whole pipeline non-reproducible.
-	bestDir := Left
+	return pickDirection(votes)
+}
+
+// pickDirection returns the most-voted direction, breaking ties by a fixed
+// candidate order (Left, Right, Up, Down). Ranging the vote map directly would
+// pick a random winner on a tie and make the whole pipeline non-reproducible.
+func pickDirection(votes map[Direction]int) Direction {
+	best := Left
 	maxVotes := -1
 	for _, dir := range []Direction{Left, Right, Up, Down} {
 		if votes[dir] > maxVotes {
 			maxVotes = votes[dir]
-			bestDir = dir
+			best = dir
 		}
 	}
-	return bestDir
+	return best
 }

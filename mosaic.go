@@ -72,93 +72,131 @@ func replaceMat(frames []gocv.Mat, i int, next gocv.Mat) {
 	old.Close()
 }
 
-// GenerateMosaicVideo generates a panoramic mosaic video using a worker pool.
+// canvasGeometry describes the shared panorama canvas: its pixel size and the
+// x/y offsets that shift every inverted transform so the leftmost/topmost frame
+// lands at the origin.
+type canvasGeometry struct {
+	width, height    int
+	xOffset, yOffset int
+}
+
+// GenerateMosaicVideo builds a single panoramic mosaic from one video and
+// writes it under outputDir as <kind>.mp4. It runs the pipeline stage by stage:
+// prepare frames, solve the canvas transforms, warp, sweep panoramas, restore
+// orientation, and encode. Each stage owns its Mats; this function closes them.
 func GenerateMosaicVideo(videoPath, outputDir string, kind Kind, cfg Config, lg *Logger) error {
 	videoName := filepath.Base(videoPath)
 	log := lg.With("video", videoName)
 	log.Info("Starting video processing", "kind", kind)
 	start := time.Now()
 
-	// Extract frames
+	// Stage 1: decode, trim borders, and rotate so the pan runs horizontally.
+	frames, dir, err := prepareFrames(videoPath, cfg, lg)
+	if err != nil {
+		return err
+	}
+	defer closeMats(frames)
+
+	// Stage 2: solve cumulative transforms and the canvas they project onto.
+	transforms, geom := buildCanvasTransforms(frames, cfg, lg)
+	defer closeMats(transforms)
+
+	// Stage 3: warp every frame onto the shared canvas (bounded parallelism).
+	warped := warpFrames(frames, transforms, geom, cfg)
+	defer closeMats(warped)
+	dumpWarpedFrames(warped, outputDir, log)
+
+	// Stage 4: sweep column offsets into panoramas, then undo the alignment
+	// rotation so the output sits in the clip's original orientation.
+	panoramas := sweepPanoramas(videoName, warped, geom, kind, cfg, lg)
+	defer closeResJobs(panoramas)
+	restoreOrientation(panoramas, dir)
+
+	// Stage 5: order the panoramas into the final frame sequence and encode.
+	videoSeq, cleanupSeq := buildSequence(panoramas, kind, cfg)
+	defer cleanupSeq()
+
+	outputPath := filepath.Join(outputDir, kind.String()+".mp4")
+	if err := generateVideoFromFrames(videoSeq, outputPath, cfg.OutputFPS, lg); err != nil {
+		return fmt.Errorf("failed to save video: %w", err)
+	}
+
+	log.Info("Generated mosaic", "duration", time.Since(start))
+	return nil
+}
+
+// prepareFrames decodes the video, trims black borders, detects the dominant
+// pan direction, and rotates every frame so the pan runs horizontally. The
+// returned frames are owned by the caller. The Direction is needed later to
+// rotate the finished mosaic back to its original orientation.
+func prepareFrames(videoPath string, cfg Config, lg *Logger) ([]gocv.Mat, Direction, error) {
 	frames, err := extractFrames(videoPath, lg)
 	if err != nil {
-		return fmt.Errorf("failed to extract frames: %w", err)
+		return nil, Left, fmt.Errorf("failed to extract frames: %w", err)
 	}
-	log.Info("Extracted frames", "count", len(frames))
-	defer func() {
-		for _, f := range frames {
-			f.Close()
-		}
-	}()
+	lg.Info("Extracted frames", "count", len(frames))
 
-	// Trim black borders from all frames, replacing each Mat in place
-	// (replaceMat closes the original so it isn't leaked).
+	// replaceMat closes the original so the in-place transform doesn't leak it.
 	for i := range frames {
 		replaceMat(frames, i, trimBlackBorders(frames[i], 10))
 	}
 
-	// Detect and normalize motion direction
 	dir := detectMotionDirection(frames, cfg, lg)
-	log.Info("Detected motion direction", "direction", dir)
+	lg.Info("Detected motion direction", "direction", dir)
 	for i := range frames {
 		replaceMat(frames, i, rotateFrame(frames[i], dir))
 	}
+	return frames, dir, nil
+}
 
-	// Calculate transformations between consecutive frames
-	transforms, refIndex := calculateTransformations(frames, cfg, lg)
-	log.Info("Calculated frame transformations", "reference_frame", refIndex)
+// buildCanvasTransforms computes the per-frame cumulative transforms, sizes the
+// canvas, and inverts each transform onto it. The returned slice is index-aligned
+// with frames (an empty Mat marks a frame that could not be aligned) and is owned
+// by the caller.
+func buildCanvasTransforms(frames []gocv.Mat, cfg Config, lg *Logger) ([]gocv.Mat, canvasGeometry) {
+	frameToRef, refIndex := calculateTransformations(frames, cfg, lg)
+	w, h, xOff, yOff := calculateCanvasSize(frames, frameToRef, refIndex, lg)
+	geom := canvasGeometry{width: w, height: h, xOffset: xOff, yOffset: yOff}
+	// invertTransforms consumes frameToRef and returns the ref→frame transforms
+	// (shifted onto the canvas) that warpFrames needs.
+	return invertTransforms(frameToRef, geom, lg), geom
+}
 
-	// Calculate canvas size
-	canvasWidth, canvasHeight, frameXOffset, frameYOffset := calculateCanvasSize(frames, transforms, refIndex, lg)
-	log.Info("Calculated canvas dimensions",
-		"width", canvasWidth,
-		"height", canvasHeight,
-		"x_offset", frameXOffset,
-		"y_offset", frameYOffset,
-	)
-
-	// Invert each transform and apply the canvas offsets.
-	invTransforms := make([]*gocv.Mat, len(transforms))
-	for i, T := range transforms {
-		if T == nil || T.Empty() {
-			// calculateTransformations leaves transforms[i] = nil for
-			// frames it couldn't align — propagate that nil through so
-			// downstream skips them instead of nil-derefing.
-			if T != nil {
-				T.Close()
-			}
-			continue
-		}
-		inv := gocv.NewMat()
-		if ok := gocv.Invert(*T, &inv, gocv.SolveDecompositionLu); ok <= 0 {
-			log.Error("Failed to invert transform", "index", i, "matrix", prettyPrintMatrix(*T))
-			inv.Close()
+// invertTransforms inverts each transform (frame→ref becomes ref→frame) and
+// folds in the canvas offsets. It consumes transforms (closing each) and returns
+// a new index-aligned slice; unalignable or non-invertible frames become empty
+// Mats so the indices stay in step with the frame slice.
+func invertTransforms(transforms []gocv.Mat, geom canvasGeometry, lg *Logger) []gocv.Mat {
+	out := make([]gocv.Mat, len(transforms))
+	for i := range transforms {
+		T := transforms[i]
+		if T.Empty() {
+			out[i] = gocv.NewMat()
 			T.Close()
 			continue
 		}
-		tx := inv.GetDoubleAt(0, 2) + float64(frameXOffset)
-		ty := inv.GetDoubleAt(1, 2) + float64(frameYOffset)
-		inv.SetDoubleAt(0, 2, tx)
-		inv.SetDoubleAt(1, 2, ty)
-
-		invTransforms[i] = &inv
+		inv := gocv.NewMat()
+		if ok := gocv.Invert(T, &inv, gocv.SolveDecompositionLu); ok <= 0 {
+			lg.Error("Failed to invert transform", "index", i, "matrix", prettyPrintMatrix(T))
+			inv.Close()
+			out[i] = gocv.NewMat()
+			T.Close()
+			continue
+		}
+		inv.SetDoubleAt(0, 2, inv.GetDoubleAt(0, 2)+float64(geom.xOffset))
+		inv.SetDoubleAt(1, 2, inv.GetDoubleAt(1, 2)+float64(geom.yOffset))
+		out[i] = inv
 		T.Close()
 	}
-	transforms = invTransforms
-	defer func() {
-		for _, t := range transforms {
-			if t != nil {
-				t.Close()
-			}
-		}
-	}()
+	return out
+}
 
-	// Warp every frame onto the canvas with bounded parallelism. A nil
-	// transform (a frame we couldn't align) yields an empty placeholder so
-	// indices stay aligned with `frames`.
-	workers := cfg.MaxWorkers
-	warpedFrames := parallelMap(len(frames), workers, func(i int) gocv.Mat {
-		if transforms[i] == nil {
+// warpFrames projects every frame onto the shared canvas with bounded
+// parallelism. A frame with an empty (unalignable) transform yields an empty
+// placeholder so indices stay aligned with frames. Results are caller-owned.
+func warpFrames(frames, transforms []gocv.Mat, geom canvasGeometry, cfg Config) []gocv.Mat {
+	return parallelMap(len(frames), cfg.MaxWorkers, func(i int) gocv.Mat {
+		if transforms[i].Empty() {
 			return gocv.NewMat()
 		}
 		warped := gocv.NewMat()
@@ -168,86 +206,78 @@ func GenerateMosaicVideo(videoPath, outputDir string, kind Kind, cfg Config, lg 
 		gocv.WarpPerspectiveWithParams(
 			frames[i],
 			&warped,
-			*transforms[i],
-			image.Pt(canvasWidth, canvasHeight),
+			transforms[i],
+			image.Pt(geom.width, geom.height),
 			gocv.InterpolationCubic,
 			gocv.BorderConstant,
 			color.RGBA{0, 0, 0, 0},
 		)
 		return warped
 	})
-	defer func() {
-		for _, f := range warpedFrames {
-			if !f.Empty() {
-				f.Close()
-			}
-		}
-	}()
+}
 
-	if debugWritesEnabled() {
-		for i, m := range warpedFrames {
-			debugPath := filepath.Join(outputDir, fmt.Sprintf("warped_frame_%d.jpg", i))
-			if ok := gocv.IMWrite(debugPath, m); !ok {
-				log.Error("Failed to save warped frame", "index", i)
-			}
-		}
-	}
-
-	outputPath := filepath.Join(outputDir, kind.String()+".mp4")
-
-	// Sweep a panorama at evenly-spaced column offsets. Static stitches
-	// half the frame count (the forward-reverse loop doubles it back);
-	// Dynamic uses them all (played forward once).
+// sweepPanoramas stitches one panorama per evenly-spaced column offset with
+// bounded parallelism. Static stitches half the frame count (the forward-reverse
+// loop doubles it back); Dynamic uses them all (played forward once). The sweep
+// spans offsets [MinimalPixelColumnIndex, len(warped)]: each frame contributes
+// one strip, so one offset step per frame walks the brush across the full
+// mosaic. parallelMap preserves offset order, so no post-sort is needed.
+func sweepPanoramas(videoName string, warped []gocv.Mat, geom canvasGeometry, kind Kind, cfg Config, lg *Logger) []resJob {
 	totalFrames := cfg.OutputFPS * cfg.OutputLengthInSeconds
 	nPanoramas := panoramaCount(kind, totalFrames)
-	// The sweep spans column offsets [MinimalPixelColumnIndex, len(frames)].
-	// The upper bound is the frame count by design: each frame contributes one
-	// strip, so the panorama is at most that many strip-columns wide, and one
-	// offset step per frame walks the brush across the full mosaic.
-	selectedOffsets := linspace(cfg.MinimalPixelColumnIndex, len(warpedFrames), nPanoramas)
-	log.Info("Selected offsets for mosaic", "count", len(selectedOffsets), "kind", kind)
+	offsets := linspace(cfg.MinimalPixelColumnIndex, len(warped), nPanoramas)
+	lg.Info("Selected offsets for mosaic", "count", len(offsets), "kind", kind)
 
-	// Stitch each offset into a panorama with bounded parallelism.
-	// parallelMap preserves offset order, so no post-sort is needed.
-	panoramas := parallelMap(len(selectedOffsets), workers, func(i int) resJob {
-		offset := selectedOffsets[i]
+	return parallelMap(len(offsets), cfg.MaxWorkers, func(i int) resJob {
 		return resJob{
-			idx: offset,
-			mat: stitchPanorama(videoName, warpedFrames, canvasWidth, canvasHeight, offset, cfg.FeatherWidth, lg),
+			idx: offsets[i],
+			mat: stitchPanorama(videoName, warped, geom.width, geom.height, offsets[i], cfg.FeatherWidth, lg),
 		}
 	})
-	defer func() {
-		for _, p := range panoramas {
-			p.mat.Close()
-		}
-	}()
+}
 
-	// The pipeline aligned and stitched everything in a rotated space where
-	// the pan runs horizontally (see rotateFrame above). Rotate each finished
-	// panorama back to the clip's original orientation before sequencing —
-	// without this, any non-left pan comes out mirrored (right) or sideways
-	// (up/down). Left needs no rotation, so skip the needless clone+close.
-	if dir != Left {
-		for i := range panoramas {
-			restored := rotateFrameBack(panoramas[i].mat, dir)
-			panoramas[i].mat.Close()
-			panoramas[i].mat = restored
+// restoreOrientation rotates each finished panorama back to the clip's original
+// orientation. The pipeline aligns and stitches in a rotated space where the pan
+// runs horizontally, so without this any non-left pan would come out mirrored
+// (right) or sideways (up/down). Left needs no rotation, so the work is skipped.
+func restoreOrientation(panoramas []resJob, dir Direction) {
+	if dir == Left {
+		return
+	}
+	for i := range panoramas {
+		restored := rotateFrameBack(panoramas[i].mat, dir)
+		panoramas[i].mat.Close()
+		panoramas[i].mat = restored
+	}
+}
+
+// dumpWarpedFrames writes each warped frame as a JPEG when MOSAIC_DEBUG_FRAMES
+// is set; it is a no-op otherwise (the dumps are several MB of I/O each).
+func dumpWarpedFrames(warped []gocv.Mat, outputDir string, lg *Logger) {
+	if !debugWritesEnabled() {
+		return
+	}
+	for i, m := range warped {
+		debugPath := filepath.Join(outputDir, fmt.Sprintf("warped_frame_%d.jpg", i))
+		if ok := gocv.IMWrite(debugPath, m); !ok {
+			lg.Error("Failed to save warped frame", "index", i)
 		}
 	}
+}
 
-	// Turn the panoramas into the final frame sequence (static
-	// forward-reverse loop, or dynamic trim+pad played forward). cleanupSeq
-	// frees any Mats the builder allocated; the panoramas are freed by defer
-	// above.
-	videoSeq, cleanupSeq := buildSequence(panoramas, kind, cfg)
-	defer cleanupSeq()
-
-	if err := generateVideoFromFrames(videoSeq, outputPath, cfg.OutputFPS, lg); err != nil {
-		return fmt.Errorf("failed to save video: %w", err)
+// closeMats closes every Mat in s. Empty placeholder Mats are allocated too, so
+// they are closed unconditionally to avoid leaking them.
+func closeMats(s []gocv.Mat) {
+	for i := range s {
+		s[i].Close()
 	}
+}
 
-	log.Info("Generated mosaic", "duration", time.Since(start))
-	return nil
+// closeResJobs closes the Mat carried by every resJob in s.
+func closeResJobs(s []resJob) {
+	for i := range s {
+		s[i].mat.Close()
+	}
 }
 
 // GenerateVideos processes all .mp4 videos in the default input
