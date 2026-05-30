@@ -32,8 +32,8 @@ strip-mosaicing technique (Peleg et al.) implemented in Go on top of
 
 1. **Extract frames** - decode the video, trim black borders, and detect the
    dominant pan direction so motion runs horizontally.
-2. **Align adjacent frames** - track [Shi Tomasi corners]([url](https://en.wikipedia.org/wiki/Corner_detection#The_Harris_&_Stephens_/_Shi%E2%80%93Tomasi_corner_detection_algorithms)) across each consecutive
-   pair with [Lucas-Kanade]([url](https://en.wikipedia.org/wiki/Lucas%E2%80%93Kanade_method)) optical flow, then fit a [RANSAC]([url](https://en.wikipedia.org/wiki/Random_sample_consensus)) partial-affine
+2. **Align adjacent frames** - track [Shi-Tomasi corners](https://en.wikipedia.org/wiki/Corner_detection#The_Harris_&_Stephens_/_Shi%E2%80%93Tomasi_corner_detection_algorithms) across each consecutive
+   pair with [Lucas-Kanade](https://en.wikipedia.org/wiki/Lucas%E2%80%93Kanade_method) optical flow, then fit a [RANSAC](https://en.wikipedia.org/wiki/Random_sample_consensus) partial-affine
    transform reduced to horizontal translation, accumulated against a central
    reference frame.
 3. **Warp** - project every aligned frame onto a shared canvas in parallel.
