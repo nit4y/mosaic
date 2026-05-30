@@ -36,7 +36,21 @@ func StabilizeScale(mat gocv.Mat) gocv.Mat {
 }
 
 func StablizeTranslation(mat gocv.Mat) gocv.Mat {
-	return StabilizeScale(StabilizeHorizontalMotion(mat))
+	mat = StabilizeScale(StabilizeHorizontalMotion(mat))
+	return DampYTranslation(mat, config.YTranslationDamping)
+}
+
+// DampYTranslation scales the ty component (element [1,2]) of a 3×3
+// affine homography by `factor`. factor=1.0 is a no-op; factor=0.0
+// removes vertical translation entirely. Mutates the input Mat in
+// place and returns it (consistent with the other stabilize helpers).
+func DampYTranslation(mat gocv.Mat, factor float64) gocv.Mat {
+	if mat.Empty() || mat.Rows() < 2 || mat.Cols() < 3 {
+		return mat
+	}
+	ty := mat.GetDoubleAt(1, 2)
+	mat.SetDoubleAt(1, 2, ty*factor)
+	return mat
 }
 
 // ApplyBlur downscales the image by config.BlurResolution, then upscales it
@@ -118,45 +132,6 @@ func CalcMotionDirection(pts1, pts2 []gocv.Point2f) string {
 	}
 }
 
-// toPoint2fVector converts a Go slice of Point2f into a gocv.Point2fVector.
-func toPoint2fVector(pts []gocv.Point2f) gocv.Point2fVector {
-	return gocv.NewPoint2fVectorFromPoints(pts)
-}
-
-func GetCornerPoints(harris gocv.Mat) gocv.Mat {
-	// Dilate the Harris response
-	kernel := gocv.NewMat()
-	defer kernel.Close()
-	gocv.Dilate(harris, &harris, kernel)
-
-	// Calculate threshold: 1% of max value
-	_, maxVal, _, _ := gocv.MinMaxLoc(harris)
-	threshold := 0.01 * maxVal
-
-	// Threshold the image
-	mask := gocv.NewMat()
-	defer mask.Close()
-	gocv.Threshold(harris, &mask, threshold, 255, gocv.ThresholdBinary)
-
-	// Find non-zero coordinates
-	coords := gocv.NewMat()
-	defer coords.Close()
-	gocv.FindNonZero(mask, &coords)
-
-	// Create points Mat (N, 1, 2) of type CV_32FC2
-	count := coords.Rows()
-	points := gocv.NewMatWithSize(count, 1, gocv.MatTypeCV32FC2)
-
-	for i := 0; i < count; i++ {
-		x := coords.GetVeciAt(i, 0)[0]
-		y := coords.GetVeciAt(i, 0)[1]
-		points.SetFloatAt(i, 0, float32(x))
-		points.SetFloatAt(i, 1, float32(y))
-	}
-
-	return points
-}
-
 func KeyPointsToMat(keypoints []gocv.KeyPoint) gocv.Mat {
 	points := gocv.NewMatWithSize(len(keypoints), 1, gocv.MatTypeCV32FC2)
 	for i, kp := range keypoints {
@@ -166,8 +141,46 @@ func KeyPointsToMat(keypoints []gocv.KeyPoint) gocv.Mat {
 	return points
 }
 
-// AlignImages aligns img2 to img1 using ORB keypoints + Lucas-Kanade optical flow.
-// Returns a 3×3 homogeneous Mat with horizontal-only motion and the motion direction.
+// detectCorners finds trackable corners in a grayscale image using
+// the Shi-Tomasi detector (cv::goodFeaturesToTrack). Returns a slice
+// of points and an N×1 CV_32FC2 Mat in the format expected by
+// calcOpticalFlowPyrLK.
+//
+// We use Shi-Tomasi rather than the ORB feature detector the code
+// originally used because the rest of the alignment pipeline
+// (Lucas-Kanade + RANSAC affine) is the textbook LK-tracking
+// pipeline, and Shi-Tomasi corners are the standard input it's
+// optimized for — they're more uniformly distributed across the
+// frame and produce more accurate RANSAC fits. The Python reference
+// in ref/ex4.py uses raw cornerHarris with a 1%-of-max threshold;
+// gocv doesn't expose cornerHarris, but Shi-Tomasi (the default of
+// GoodFeaturesToTrack) is closely related and the canonical OpenCV
+// choice for LK tracking.
+func detectCorners(gray gocv.Mat, maxCorners int, quality float64, minDist float64) ([]gocv.Point2f, gocv.Mat) {
+	corners := gocv.NewMat()
+	if err := gocv.GoodFeaturesToTrack(gray, &corners, maxCorners, quality, minDist); err != nil {
+		corners.Close()
+		return nil, gocv.NewMat()
+	}
+	n := corners.Rows()
+	pts := make([]gocv.Point2f, n)
+	out := gocv.NewMatWithSize(n, 1, gocv.MatTypeCV32FC2)
+	for i := 0; i < n; i++ {
+		// GoodFeaturesToTrack returns Nx1 CV_32FC2; each entry is
+		// (x, y) as a 2-float vector.
+		v := corners.GetVecfAt(i, 0)
+		pts[i] = gocv.Point2f{X: v[0], Y: v[1]}
+		out.SetFloatAt(i, 0, v[0])
+		out.SetFloatAt(i, 1, v[1])
+	}
+	corners.Close()
+	return pts, out
+}
+
+// AlignImages aligns img2 to img1 using Shi-Tomasi corner detection
+// + Lucas-Kanade optical flow + RANSAC affine. Returns a 3×3
+// homogeneous Mat with horizontal-only motion (no rotation/skew, unit
+// scale, Y-damped per config) and the motion direction.
 func AlignImages(img1, img2 gocv.Mat, calcDirection bool) (*gocv.Mat, string) {
 	log := logger.WithOperation("align_images")
 
@@ -179,20 +192,14 @@ func AlignImages(img1, img2 gocv.Mat, calcDirection bool) (*gocv.Mat, string) {
 	gocv.CvtColor(img1, &gray1, gocv.ColorBGRToGray)
 	gocv.CvtColor(img2, &gray2, gocv.ColorBGRToGray)
 
-	// detect ORB keypoints on gray1
-	orb := gocv.NewORBWithParams(500, 1.2, 8, 31, 0, 2, gocv.ORBScoreTypeHarris, 31, 20)
-	defer orb.Close()
-	kps := orb.Detect(gray1)
-
-	// build slice of points
-	ptsList := make([]gocv.Point2f, len(kps))
-	for i, kp := range kps {
-		ptsList[i] = gocv.Point2f{X: float32(kp.X), Y: float32(kp.Y)}
-	}
-
-	// convert slice to Point2fVector then to Mat
-	prevPtsMat := KeyPointsToMat(kps)
+	// Detect Shi-Tomasi corners in gray1 — these are what
+	// Lucas-Kanade will track from frame 1 to frame 2.
+	ptsList, prevPtsMat := detectCorners(gray1, config.MaxCorners, config.CornerQuality, float64(config.CornerMinDist))
 	defer prevPtsMat.Close()
+	if len(ptsList) == 0 {
+		log.Error("No corners detected in gray1")
+		return nil, config.Left
+	}
 
 	// blur for LK stability
 	b1 := ApplyBlur(gray1)
@@ -239,38 +246,19 @@ func AlignImages(img1, img2 gocv.Mat, calcDirection bool) (*gocv.Mat, string) {
 	defer v1.Close()
 	v2 := gocv.NewPoint2fVectorFromPoints(valid2)
 	defer v2.Close()
+	inliersMask := gocv.NewMat()
+	defer inliersMask.Close()
 	aff := gocv.EstimateAffinePartial2DWithParams(
 		v1,
 		v2,
-		gocv.NewMat(),
+		inliersMask,
 		int(gocv.HomographyMethodRANSAC),
 		float64(config.RansacThreshold),
 		config.RansacMaxIterations,
 		config.RansacConfidence,
 		config.RansacFlag,
 	)
-
-	if aff.Empty() {
-		log.Error("Failed to estimate affine transformation - empty matrix")
-	}
-
-	// defer aff.Close()
-
-	log.Info("Affine matrix type", "type", aff.Type().String())
-
-	// convert to homogeneous and stabilize
-	H := ToHomogeneous(aff)
-	if H.Empty() {
-		log.Error("Failed to convert affine to homogeneous matrix - empty matrix")
-	}
-	log.Info("Homogeneous matrix type", "type", H.Type().String())
-
-	// defer aff.Close()
-	Hh := StablizeTranslation(H)
-	if Hh.Empty() {
-		log.Error("Failed to stabilize horizontal motion - empty matrix")
-	}
-	// defer H.Close()
+	defer aff.Close()
 
 	// compute direction if needed
 	dir := config.Left
@@ -278,9 +266,22 @@ func AlignImages(img1, img2 gocv.Mat, calcDirection bool) (*gocv.Mat, string) {
 		dir = CalcMotionDirection(valid1, valid2)
 	}
 
-	log.Info("Stabilized matrix type", "type", Hh.Type().String())
+	if aff.Empty() || aff.Rows() < 2 || aff.Cols() < 3 {
+		log.Error("Failed to estimate affine transformation",
+			"empty", aff.Empty(),
+			"rows", aff.Rows(),
+			"cols", aff.Cols())
+		return nil, dir
+	}
+
+	// convert to homogeneous (Hh shares storage with H — they are the
+	// same Mat returned by StablizeTranslation, so we close it only on
+	// the failure path).
+	H := ToHomogeneous(aff)
+	Hh := StablizeTranslation(H)
 	if Hh.Empty() {
 		log.Error("Failed to stabilize horizontal motion - empty matrix")
+		Hh.Close()
 		return nil, dir
 	}
 	return &Hh, dir
@@ -297,12 +298,24 @@ func ExtractFrames(videoPath string) ([]gocv.Mat, error) {
 	}
 	defer video.Close()
 
+	if !video.IsOpened() {
+		// VideoCaptureFile can return nil error while still failing to
+		// open the underlying backend (missing codec, corrupt header,
+		// unsupported container) — IsOpened catches that case.
+		return nil, fmt.Errorf("video capture failed to open: %s", videoPath)
+	}
+
 	fps := video.Get(gocv.VideoCaptureFPS)
 	frameCount := int(video.Get(gocv.VideoCaptureFrameCount))
 	log.Info("Video properties", "fps", fps, "total_frames", frameCount)
 
-	// Extract frames
-	frames := make([]gocv.Mat, 0, frameCount)
+	// Cap initial capacity to avoid huge allocations if the container
+	// reports a bogus frame count.
+	cap := frameCount
+	if cap < 0 || cap > 100000 {
+		cap = 0
+	}
+	frames := make([]gocv.Mat, 0, cap)
 	frame := gocv.NewMat()
 	defer frame.Close()
 
@@ -314,6 +327,10 @@ func ExtractFrames(videoPath string) ([]gocv.Mat, error) {
 			continue
 		}
 		frames = append(frames, frame.Clone())
+	}
+
+	if len(frames) == 0 {
+		return nil, fmt.Errorf("no frames could be decoded from %s", videoPath)
 	}
 
 	return frames, nil
@@ -368,14 +385,19 @@ func CalculateTransformations(frames []gocv.Mat) ([]*gocv.Mat, int) {
 	accum := id.Clone() // running product
 	for i := refIdx + 1; i < n; i++ {
 		H, _ := AlignImages(frames[i-1], frames[i], true)
-		if H.Empty() {
+		if H == nil || H.Empty() {
 			log.Error("Failed to align frames for right side", "i", i)
-			H.Close()
+			if H != nil {
+				H.Close()
+			}
+			// Keep transforms[i] = nil; downstream code must guard.
 			continue
 		}
 		// accum = accum @ H
 		tmp := gocv.NewMat()
-		gocv.Gemm(accum, *H, 1.0, gocv.NewMat(), 0.0, &tmp, 0)
+		emptyC := gocv.NewMat()
+		gocv.Gemm(accum, *H, 1.0, emptyC, 0.0, &tmp, 0)
+		emptyC.Close()
 		accum.Close()
 		H.Close()
 		accum = tmp
@@ -385,19 +407,24 @@ func CalculateTransformations(frames []gocv.Mat) ([]*gocv.Mat, int) {
 		transforms[i] = &cl
 		yTranslations = append(yTranslations, accum.GetDoubleAt(1, 2))
 	}
+	accum.Close() // release the right-side running product before reusing the name
 
 	// 5) accumulate to the left of refIdx
 	accum = id.Clone()
 	for i := refIdx - 1; i >= 0; i-- {
 		H, _ := AlignImages(frames[i+1], frames[i], false)
-		if H.Empty() {
+		if H == nil || H.Empty() {
 			log.Error("Failed to align frames for left side", "i", i)
-			H.Close()
+			if H != nil {
+				H.Close()
+			}
 			continue
 		}
 		// accum = H @ accum
 		tmp := gocv.NewMat()
-		gocv.Gemm(*H, accum, 1.0, gocv.NewMat(), 0.0, &tmp, 0)
+		emptyC := gocv.NewMat()
+		gocv.Gemm(*H, accum, 1.0, emptyC, 0.0, &tmp, 0)
+		emptyC.Close()
 		accum.Close()
 		H.Close()
 		accum = tmp
@@ -407,6 +434,7 @@ func CalculateTransformations(frames []gocv.Mat) ([]*gocv.Mat, int) {
 		transforms[i] = &cl
 		yTranslations = append([]float64{accum.GetDoubleAt(1, 2)}, yTranslations...)
 	}
+	accum.Close()
 
 	// 6) compute median of the vertical translations
 	median := Median(yTranslations)
@@ -471,11 +499,27 @@ func CalculateCanvasSize(frames []gocv.Mat, transforms []*gocv.Mat, refIndex int
 		maxY = math.Max(maxY, ty)
 	}
 
-	// Calculate final canvas dimensions
+	// Canvas dimensions = the span of original-transform translations
+	// plus one frame width/height.
 	canvasWidth := int(math.Ceil(maxX - minX + float64(width)))
 	canvasHeight := int(math.Ceil(maxY - minY + float64(height)))
-	frameXOffset := int(math.Abs(minX))
-	frameYOffset := int(math.Abs(minY))
+	// Offsets must shift INVERTED transforms (frame i → ref) so the
+	// leftmost/topmost frame lands at canvas origin (0, 0). Since
+	// inv(T_i).tx = -T_i.tx, the smallest inv.tx is -max(T_i.tx) =
+	// -maxX. To make that frame land at canvas col 0, we add +maxX
+	// as the X offset. (The earlier code used -minX, which placed
+	// the chronologically-last frame past the right edge of the
+	// canvas — empirically reproducible by inspecting warped frame
+	// dumps where the final frame came out entirely black.) Same
+	// logic applies to Y.
+	frameXOffset := int(math.Ceil(maxX))
+	frameYOffset := int(math.Ceil(maxY))
+	if frameXOffset < 0 {
+		frameXOffset = 0
+	}
+	if frameYOffset < 0 {
+		frameYOffset = 0
+	}
 
 	log.Info("Calculated canvas dimensions",
 		"width", canvasWidth,
@@ -541,6 +585,86 @@ func TrimBlackBorders(img gocv.Mat, threshold uint8) gocv.Mat {
 	return cropped
 }
 
+// leftmostNonBlackColumn returns the x-coordinate of the leftmost
+// column in m that contains any non-black pixel, or -1 if the image
+// is entirely black. Implemented by collapsing rows with cv::reduce
+// (max) into a 1×W mask and scanning at most W bytes Go-side — much
+// faster than per-pixel BGR iteration over the whole frame.
+func leftmostNonBlackColumn(m gocv.Mat) int {
+	if m.Empty() {
+		return -1
+	}
+	gray := gocv.NewMat()
+	defer gray.Close()
+	if m.Channels() > 1 {
+		gocv.CvtColor(m, &gray, gocv.ColorBGRToGray)
+	} else {
+		m.CopyTo(&gray)
+	}
+
+	binary := gocv.NewMat()
+	defer binary.Close()
+	// Any non-zero gray pixel is treated as content. Matches the
+	// Python `sum(axis=2) > 0` check on warped frames produced by
+	// warpPerspective with BORDER_CONSTANT=0.
+	gocv.Threshold(gray, &binary, 0, 255, gocv.ThresholdBinary)
+
+	colMax := gocv.NewMat()
+	defer colMax.Close()
+	// dim=0 collapses rows → 1×W, taking max per column.
+	if err := gocv.Reduce(binary, &colMax, 0, gocv.ReduceMax, gocv.MatTypeCV8U); err != nil {
+		return -1
+	}
+
+	for x := 0; x < colMax.Cols(); x++ {
+		if colMax.GetUCharAt(0, x) != 0 {
+			return x
+		}
+	}
+	return -1
+}
+
+// paintStrip copies the vertical column-range [x1, x2) from src onto
+// dst at the same column range, masked by src's non-black pixels.
+// Used by StitchPanorama to splice one frame's contribution into the
+// panorama at its already-aligned position. Returns the number of
+// columns actually painted (after clamping); useful for tests.
+func paintStrip(dst, src gocv.Mat, x1, x2 int) int {
+	if x1 < 0 {
+		x1 = 0
+	}
+	if x2 > dst.Cols() {
+		x2 = dst.Cols()
+	}
+	if x2 > src.Cols() {
+		x2 = src.Cols()
+	}
+	if x2 <= x1 {
+		return 0
+	}
+	h := dst.Rows()
+	if src.Rows() < h {
+		h = src.Rows()
+	}
+
+	stripRect := image.Rect(x1, 0, x2, h)
+	srcRoi := src.Region(stripRect)
+	defer srcRoi.Close()
+	dstRoi := dst.Region(stripRect)
+	defer dstRoi.Close()
+
+	gray := gocv.NewMat()
+	defer gray.Close()
+	gocv.CvtColor(srcRoi, &gray, gocv.ColorBGRToGray)
+
+	mask := gocv.NewMat()
+	defer mask.Close()
+	gocv.Threshold(gray, &mask, 0, 255, gocv.ThresholdBinary)
+
+	srcRoi.CopyToWithMask(&dstRoi, mask)
+	return x2 - x1
+}
+
 // clampInt ensures v is between min and max (inclusive).
 func clampInt(v, min, max int) int {
 	if v < min {
@@ -552,6 +676,30 @@ func clampInt(v, min, max int) int {
 	return v
 }
 
+// StitchPanorama composes a single panorama image from a sequence of
+// canvas-sized warped frames using the column-strip algorithm from
+// the Python reference implementation in ref/ex4.py.
+//
+// For each consecutive pair (prev, curr) we find the leftmost
+// non-black column of each (L_prev, L_curr) and paint the column
+// strip [L_prev+frameXOffset, L_curr+frameXOffset) of prev_warped
+// onto the canvas at the same column range. Because each warped
+// frame is already aligned to its target position on the canvas, the
+// strip lands exactly where it needs to be — no horizontal
+// accumulator, no overlay of full frames.
+//
+// frameXOffset shifts which column slice of each frame contributes
+// to the panorama. For dynamic mosaics, varying frameXOffset across
+// the output sequence produces a time-evolving panorama. For static
+// mosaics it is typically a small constant (e.g.
+// config.MinimalPixelColumnIndex).
+//
+// Caveat (matches the Python reference): the trailing frame's strip
+// is intentionally not painted because there is no next frame to
+// bound it. We also paint a final tail strip from the last frame
+// using its full content width — this is a small, deliberate
+// extension over the Python so the rightmost ~frame_width of the
+// canvas isn't always black.
 func StitchPanorama(
 	videoName string,
 	warpedFrames []gocv.Mat,
@@ -564,125 +712,88 @@ func StitchPanorama(
 		"frame_count", len(warpedFrames),
 		"canvas_width", canvasWidth,
 		"canvas_height", canvasHeight,
-		"x_offset", frameXOffset,
+		"frame_x_offset", frameXOffset,
 	)
 
-	// 1) Blank canvas
 	canvas := gocv.NewMatWithSize(canvasHeight, canvasWidth, gocv.MatTypeCV8UC3)
 	canvas.SetTo(gocv.NewScalar(0, 0, 0, 0))
 
-	// precompute “at least one column-per-frame” width
-	// frameCount := len(warpedFrames)
-	// if frameCount == 0 {
-	// 	return canvas
-	// }
-	// frameWidth := warpedFrames[0].Cols()
-	// minStrip := frameWidth / frameCount
+	if len(warpedFrames) == 0 {
+		return canvas
+	}
 
-	var prevWarped gocv.Mat
-	prevLeft := 0
-	hasPrev := false
+	var firstWarped, prevWarped *gocv.Mat
+	firstLeftmostX, prevLeftmostX := 0, 0
 
-	// this is where we’ll paste the next strip
-	nextDstX := 0
-
-	for idx, warped := range warpedFrames {
-		log.Debug("Stitching frame", "index", idx, "offset", frameXOffset)
-		currLeft := findLeftmostNonBlack(warped)
-		if currLeft < 0 {
+	for i := range warpedFrames {
+		warped := &warpedFrames[i]
+		if warped.Empty() {
+			continue
+		}
+		currLeftmostX := leftmostNonBlackColumn(*warped)
+		if currLeftmostX < 0 {
+			// frame is entirely black — skip without disturbing
+			// prev/cur tracking, so the next non-black frame still
+			// pairs with the right predecessor.
 			continue
 		}
 
-		if hasPrev {
-			// calc desired strip width
-			rawWidth := currLeft - prevLeft
-			if rawWidth <= 0 {
-				rawWidth = 1 // at least one pixel
-			}
-
-			stripW := rawWidth
-
-			// source X’s in prevWarped
-			srcX1 := clampInt(prevLeft+frameXOffset, 0, prevWarped.Cols())
-			srcX2 := clampInt(srcX1+stripW, 0, prevWarped.Cols())
-			if srcX2 <= srcX1 {
-				log.Warn("nothing to copy from source", "frame", idx)
-			} else {
-				// destination X’s on canvas
-				dstX1 := nextDstX
-				dstX2 := nextDstX + (srcX2 - srcX1)
-				// clamp to canvas bounds
-				if dstX1 < 0 {
-					dstX1 = 0
-				}
-				if dstX2 > canvas.Cols() {
-					// shrink the copy width if we hit the edge
-					dstX2 = canvas.Cols()
-					srcX2 = srcX1 + (dstX2 - dstX1)
-				}
-
-				if dstX2 > dstX1 {
-					srcRect := image.Rect(srcX1, 0, srcX2, prevWarped.Rows())
-					dstRect := image.Rect(dstX1, 0, dstX2, canvas.Rows())
-					srcRoi := prevWarped.Region(srcRect)
-					dstRoi := canvas.Region(dstRect)
-
-					// mask & copy
-					gray := gocv.NewMat()
-					mask := gocv.NewMat()
-					gocv.CvtColor(srcRoi, &gray, gocv.ColorBGRToGray)
-					gocv.Threshold(gray, &mask, 1, 255, gocv.ThresholdBinary)
-					srcRoi.CopyToWithMask(&dstRoi, mask)
-
-					gray.Close()
-					mask.Close()
-					srcRoi.Close()
-					dstRoi.Close()
-
-					// advance paste pointer
-					nextDstX = dstX2
-				} else {
-					log.Warn("skip paste: dstX1>=dstX2", "dstX1", dstX1, "dstX2", dstX2, "frame", idx)
-				}
-			}
+		if prevWarped != nil {
+			paintStrip(canvas, *prevWarped, prevLeftmostX+frameXOffset, currLeftmostX+frameXOffset)
+		} else {
+			// First non-empty frame seen — remember it for the
+			// leading strip painted after the loop.
+			firstWarped = warped
+			firstLeftmostX = currLeftmostX
 		}
-
-		// prepare for next iteration
-		if hasPrev {
-			prevWarped.Close()
-		}
-		prevWarped = warped.Clone()
-		prevLeft = currLeft
-		hasPrev = true
-
-		// debug dump
-		dbg := fmt.Sprintf("output/canvas_after_frame_%d.jpg", idx)
-		if !gocv.IMWrite(dbg, canvas) {
-			log.Error("Failed to save canvas", "path", dbg)
-		}
+		prevWarped = warped
+		prevLeftmostX = currLeftmostX
 	}
 
-	// (optional) you could also copy a final tail strip here if you want
-	// to fill until the right edge.  But now everything up to nextDstX
-	// is guaranteed non-overlapping and at least minStrip wide.
+	// Leading strip: paint up to EdgeStripWidth cols immediately to
+	// the left of the first regular strip. We deliberately *don't*
+	// paint all the way to canvas col 0 — those cols are outside
+	// any frame's content and stretching frame 0 across them just
+	// produces a smeared edge.
+	if firstWarped != nil {
+		lEnd := firstLeftmostX + frameXOffset
+		lStart := lEnd - config.EdgeStripWidth
+		if lStart < 0 {
+			lStart = 0
+		}
+		paintStrip(canvas, *firstWarped, lStart, lEnd)
+	}
+	// Tail strip: paint up to EdgeStripWidth cols immediately to
+	// the right of the last regular strip.
+	if prevWarped != nil {
+		tStart := prevLeftmostX + frameXOffset
+		tEnd := tStart + config.EdgeStripWidth
+		if tEnd > canvas.Cols() {
+			tEnd = canvas.Cols()
+		}
+		paintStrip(canvas, *prevWarped, tStart, tEnd)
+	}
 
 	log.Info("Completed panorama stitching")
 	return canvas
 }
 
-// findLeftmostNonBlack returns the x-coordinate of the first column
-// in m that contains any non-black pixel, or –1 if none.
-func findLeftmostNonBlack(m gocv.Mat) int {
-	rows, cols := m.Rows(), m.Cols()
-	for x := 0; x < cols; x++ {
-		for y := 0; y < rows; y++ {
-			pix := m.GetVecbAt(y, x)
-			if pix[0] != 0 || pix[1] != 0 || pix[2] != 0 {
-				return x
-			}
-		}
+// pingPongResJobs returns a slice of length 2*N that plays the input
+// forward then in reverse: [j_0, j_1, ..., j_{n-1}, j_{n-1}, ...,
+// j_1, j_0]. The reversed half shares gocv.Mat references with the
+// input — the caller must close each unique Mat exactly once after
+// writing. If the input is empty, returns nil.
+func pingPongResJobs(jobs []resJob) []resJob {
+	n := len(jobs)
+	if n == 0 {
+		return nil
 	}
-	return -1
+	out := make([]resJob, 0, 2*n)
+	out = append(out, jobs...)
+	for i := n - 1; i >= 0; i-- {
+		out = append(out, jobs[i])
+	}
+	return out
 }
 
 // GenerateVideoFromFrames converts a slice of Mats into an MP4 video file.
@@ -754,7 +865,7 @@ func RotateFrameBack(frame gocv.Mat, direction string) gocv.Mat {
 		gocv.Rotate(frame, &original, gocv.Rotate90CounterClockwise)
 	case config.Down:
 		original = gocv.NewMat()
-		gocv.Rotate(frame, &original, gocv.Rotate90CounterClockwise)
+		gocv.Rotate(frame, &original, gocv.Rotate90Clockwise)
 	default:
 		original = frame.Clone()
 	}
@@ -821,19 +932,46 @@ func LinspaceChan(start, stop, count int) <-chan int {
 	ch := make(chan int)
 	go func() {
 		defer close(ch)
-		if count <= 0 {
-			return
-		}
-		if count == 1 {
-			ch <- start
-			return
-		}
-		step := float64(stop-start) / float64(count-1)
-		for i := 0; i < count; i++ {
-			ch <- int(float64(start) + step*float64(i))
+		for _, v := range linspace(start, stop, count) {
+			ch <- v
 		}
 	}()
 	return ch
+}
+
+// linspace returns `count` evenly-spaced integer values from start to
+// stop (inclusive of both endpoints when count >= 2). Returns an empty
+// slice for count <= 0.
+func linspace(start, stop, count int) []int {
+	if count <= 0 {
+		return []int{}
+	}
+	out := make([]int, 0, count)
+	if count == 1 {
+		out = append(out, start)
+		return out
+	}
+	step := float64(stop-start) / float64(count-1)
+	for i := 0; i < count; i++ {
+		out = append(out, int(float64(start)+step*float64(i)))
+	}
+	return out
+}
+
+// debugWritesEnabled returns true when MOSAIC_DEBUG_FRAMES is set. The
+// per-frame JPEG dumps are several MB of I/O each and are useful for
+// diagnostics but pure noise in production / CI runs.
+func debugWritesEnabled() bool {
+	return os.Getenv("MOSAIC_DEBUG_FRAMES") != ""
+}
+
+// replaceMat closes the old Mat at frames[i] and writes the new one
+// in. Use when an in-place transform returns a fresh Mat for each
+// frame — otherwise the original frame leaks every iteration.
+func replaceMat(frames []gocv.Mat, i int, next gocv.Mat) {
+	old := frames[i]
+	frames[i] = next
+	old.Close()
 }
 
 // GenerateMosaicVideo generates a panoramic mosaic video using a worker pool.
@@ -849,17 +987,23 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 		return fmt.Errorf("failed to extract frames: %w", err)
 	}
 	log.Info("Extracted frames", "count", len(frames))
+	defer func() {
+		for _, f := range frames {
+			f.Close()
+		}
+	}()
 
-	// Trim black borders from all frames
+	// Trim black borders from all frames. The in-place assignment used
+	// to leak the original Mat every iteration.
 	for i := range frames {
-		frames[i] = TrimBlackBorders(frames[i], 10)
+		replaceMat(frames, i, TrimBlackBorders(frames[i], 10))
 	}
 
 	// Detect and normalize motion direction
 	dir := DetectMotionDirection(frames)
 	log.Info("Detected motion direction", "direction", dir)
 	for i := range frames {
-		frames[i] = RotateFrame(frames[i], dir)
+		replaceMat(frames, i, RotateFrame(frames[i], dir))
 	}
 
 	// Calculate transformations between consecutive frames
@@ -875,51 +1019,68 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 		"y_offset", frameYOffset,
 	)
 
-	// Invert each transform and apply the canvas offsets, just like your Python version
+	// Invert each transform and apply the canvas offsets.
 	invTransforms := make([]*gocv.Mat, len(transforms))
 	for i, T := range transforms {
-		// invert T
-		inv := gocv.NewMat()
-		ma := *T
-
-		if ok := gocv.Invert(ma, &inv, gocv.SolveDecompositionLu); ok <= 0 {
-			// print the matrix `ma``
-
-			//pretty print `ma`
-			log.Error("Failed to invert transform", "index", i, "matrix", prettyPrintMatrix(ma))
-
-			log.Error("Failed to invert transform", "index", i)
+		if T == nil || T.Empty() {
+			// CalculateTransformations leaves transforms[i] = nil for
+			// frames it couldn't align — propagate that nil through so
+			// downstream skips them instead of nil-derefing.
+			if T != nil {
+				T.Close()
+			}
 			continue
 		}
-		// translate by the offsets
+		inv := gocv.NewMat()
+		if ok := gocv.Invert(*T, &inv, gocv.SolveDecompositionLu); ok <= 0 {
+			log.Error("Failed to invert transform", "index", i, "matrix", prettyPrintMatrix(*T))
+			inv.Close()
+			T.Close()
+			continue
+		}
 		tx := inv.GetDoubleAt(0, 2) + float64(frameXOffset)
 		ty := inv.GetDoubleAt(1, 2) + float64(frameYOffset)
 		inv.SetDoubleAt(0, 2, tx)
 		inv.SetDoubleAt(1, 2, ty)
 
-		// store and release the original
 		invTransforms[i] = &inv
 		T.Close()
 	}
 	transforms = invTransforms
+	defer func() {
+		for _, t := range transforms {
+			if t != nil {
+				t.Close()
+			}
+		}
+	}()
 
 	// Now warp all frames using the inverted, offset transforms
 	warpedFrames := make([]gocv.Mat, len(frames))
-	for i := range frames {
-		warpedFrames[i] = gocv.NewMat()
-	}
+	defer func() {
+		for _, f := range warpedFrames {
+			if !f.Empty() {
+				f.Close()
+			}
+		}
+	}()
 
-	// Create a worker pool for parallel processing
 	jobs := make(chan int, len(frames))
 	results := make(chan resJob, len(frames))
 	var wg sync.WaitGroup
 
-	// Start workers
 	for w := 0; w < config.ProcessPoolWorkers; w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for i := range jobs {
+				if transforms[i] == nil {
+					// Skip frames whose transform couldn't be computed
+					// — send a placeholder NewMat so the index slot
+					// stays aligned with `frames`.
+					results <- resJob{idx: i, mat: gocv.NewMat()}
+					continue
+				}
 				warped := gocv.NewMat()
 				gocv.WarpPerspectiveWithParams(
 					frames[i],
@@ -935,25 +1096,24 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 		}()
 	}
 
-	// Send jobs
 	for i := range frames {
 		jobs <- i
 	}
 	close(jobs)
 
-	// Collect results
 	go func() {
 		wg.Wait()
 		close(results)
 	}()
 
+	debugFrames := debugWritesEnabled()
 	for job := range results {
 		warpedFrames[job.idx] = job.mat
-		debugPath := filepath.Join(outputDir, fmt.Sprintf("warped_frame_%d.jpg", job.idx))
-		if ok := gocv.IMWrite(debugPath, job.mat); !ok {
-			log.Error("Failed to save warped frame", "index", job.idx)
-		} else {
-			log.Info("Saved warped frame", "index", job.idx, "path", debugPath)
+		if debugFrames {
+			debugPath := filepath.Join(outputDir, fmt.Sprintf("warped_frame_%d.jpg", job.idx))
+			if ok := gocv.IMWrite(debugPath, job.mat); !ok {
+				log.Error("Failed to save warped frame", "index", job.idx)
+			}
 		}
 	}
 
@@ -964,39 +1124,39 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 	}
 	outputPath := filepath.Join(outputDir, outputName+".mp4")
 
-	selectedIndices := LinspaceChan(config.MinimalPixelColumnIndex, len(warpedFrames), config.OutputFPS*config.OutputLengthInSeconds)
+	// Generate half the requested frame count as unique panoramas;
+	// pingPongResJobs below doubles them so the output video plays
+	// forward then backward, matching the Python ref's
+	// panoramas + panoramas[::-1] pattern.
+	totalFrames := config.OutputFPS * config.OutputLengthInSeconds
+	uniquePanoramas := totalFrames / 2
+	if uniquePanoramas < 1 {
+		uniquePanoramas = 1
+	}
+	selectedIndices := linspace(config.MinimalPixelColumnIndex, len(warpedFrames), uniquePanoramas)
+	log.Info("Selected indices for mosaic", "indices", selectedIndices, "total_output_frames", totalFrames)
 
-	log.Info("Selected indices for mosaic", "indices", selectedIndices)
-
-	// Stitch panorama
-
-	mosaics := make(chan resJob, 50)
+	mosaics := make(chan resJob, len(selectedIndices))
+	jobsCh := make(chan int, len(selectedIndices))
+	for _, idx := range selectedIndices {
+		jobsCh <- idx
+	}
+	close(jobsCh)
 
 	stitchWg := sync.WaitGroup{}
 	for sticher := 0; sticher < config.StitcherWorkers; sticher++ {
 		stitchWg.Add(1)
 		go func() {
 			defer stitchWg.Done()
-
-			for offset := range selectedIndices {
-				log.Info("Stitching panorama", "offset", offset)
-
+			for offset := range jobsCh {
 				mosaics <- resJob{
 					idx: offset,
-					mat: StitchPanorama(
-						videoName,
-						warpedFrames,
-						canvasWidth,
-						canvasHeight,
-						offset,
-					),
+					mat: StitchPanorama(videoName, warpedFrames, canvasWidth, canvasHeight, offset),
 				}
-				log.Info("Stitched panorama successfully", "output", outputPath, "offset", offset)
 			}
 		}()
 	}
 
-	// Close the mosaics channel when done
 	go func() {
 		stitchWg.Wait()
 		close(mosaics)
@@ -1005,83 +1165,97 @@ func GenerateMosaicVideo(videoPath, outputDir string, dynamic bool) error {
 	outputFrames := make([]resJob, 0, len(selectedIndices))
 	for job := range mosaics {
 		outputFrames = append(outputFrames, job)
-		log.Info("Received stitched mosaic frame", "index", job.idx)
 	}
+	defer func() {
+		for _, f := range outputFrames {
+			f.mat.Close()
+		}
+	}()
 
-	// sort by index to maintain order
 	sort.Slice(outputFrames, func(i, j int) bool {
 		return outputFrames[i].idx < outputFrames[j].idx
 	})
 
-	// Save as video
-	if err := GenerateVideoFromFrames(outputFrames, canvasHeight, canvasWidth, outputPath, config.OutputFPS); err != nil {
+	// Build the ping-pong sequence (forward then reversed). The
+	// reversed half shares Mat references with outputFrames, so the
+	// outer deferred Close still does the right thing — each
+	// underlying Mat is closed exactly once.
+	videoSeq := pingPongResJobs(outputFrames)
+	if err := GenerateVideoFromFrames(videoSeq, canvasHeight, canvasWidth, outputPath, config.OutputFPS); err != nil {
 		return fmt.Errorf("failed to save video: %w", err)
-	}
-
-	// Clean up
-	for _, frame := range frames {
-		frame.Close()
-	}
-	for _, frame := range warpedFrames {
-		frame.Close()
 	}
 
 	log.Info("Generated mosaic", "duration", time.Since(start))
 	return nil
 }
 
-// GenerateVideos processes all .mp4 videos in the input directory.
+// GenerateVideos processes all .mp4 videos in the default input
+// directory ("input/") and writes mosaics under "output/". Convenience
+// wrapper for the CLI; tests and external callers should use
+// GenerateVideosFromDir to keep paths injectable.
 func GenerateVideos() error {
-	// Get all video files from input directory
-	files, err := os.ReadDir("input")
+	return GenerateVideosFromDir(config.InputDir, "output")
+}
+
+// GenerateVideosFromDir is the testable form of GenerateVideos.
+func GenerateVideosFromDir(inputDir, outputDir string) error {
+	videoFiles, err := listVideoFiles(inputDir)
 	if err != nil {
-		return fmt.Errorf("failed to read input directory: %w", err)
+		return err
 	}
-
-	// Filter for video files
-	var videoFiles []string
-	for _, file := range files {
-		if !file.IsDir() {
-			ext := filepath.Ext(file.Name())
-			if ext == ".mp4" || ext == ".avi" || ext == ".mov" {
-				videoFiles = append(videoFiles, filepath.Join("input", file.Name()))
-			}
-		}
-	}
-
 	if len(videoFiles) == 0 {
-		return fmt.Errorf("no video files found in input directory")
+		return fmt.Errorf("no video files found in input directory %q", inputDir)
 	}
 
-	logger.Log.Info("Found video files to process", "count", len(videoFiles))
+	logger.Log.Info("Found video files to process", "count", len(videoFiles), "input_dir", inputDir)
 
-	// Process each video
+	var firstErr error
 	for _, videoPath := range videoFiles {
 		videoName := filepath.Base(videoPath)
 		log := logger.WithVideo(videoName)
 
 		log.Info("Starting video processing")
 
-		// Create output directory if it doesn't exist
-		outputDir := filepath.Join("output", filepath.Base(videoPath))
-		if err := os.MkdirAll(outputDir, 0755); err != nil {
+		videoOutputDir := filepath.Join(outputDir, videoName)
+		if err := os.MkdirAll(videoOutputDir, 0o755); err != nil {
 			log.Error("Failed to create output directory", "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 
-		// Generate both static and dynamic mosaics
-		if err := GenerateMosaicVideo(videoPath, outputDir, false); err != nil {
+		if err := GenerateMosaicVideo(videoPath, videoOutputDir, false); err != nil {
 			log.Error("Failed to generate static mosaic", "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		log.Info("Generated static mosaic")
-
-		// if err := GenerateMosaicVideo(videoPath, outputDir, true); err != nil {
-		// 	log.Error("Failed to generate dynamic mosaic", "error", err)
-		// 	continue
-		// }
-		log.Info("Generated dynamic mosaic")
 	}
 
-	return nil
+	return firstErr
+}
+
+// listVideoFiles returns sorted absolute (or input-dir-relative) paths
+// for video files in dir. Sorted output gives deterministic processing
+// order — useful for both reproducible debugging and stable tests.
+func listVideoFiles(dir string) ([]string, error) {
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read input directory %q: %w", dir, err)
+	}
+	var videoFiles []string
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		ext := filepath.Ext(file.Name())
+		if ext == ".mp4" || ext == ".avi" || ext == ".mov" {
+			videoFiles = append(videoFiles, filepath.Join(dir, file.Name()))
+		}
+	}
+	sort.Strings(videoFiles)
+	return videoFiles, nil
 }
