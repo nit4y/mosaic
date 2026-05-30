@@ -42,8 +42,11 @@ const (
 	//           scripts/compare_mosaics.sh vs the flattened school ref).
 	//   false → re-center frames on the median vertical drift, preserving
 	//           genuine vertical camera motion (taller, wedge-prone canvas).
-	// Default true: the target footage is a horizontal pan.
-	FlattenVertical = true
+	// Default false: preserve real vertical motion so strips stay aligned
+	// vertically; the diagonal black wedges this can introduce are bounded
+	// by the content-box crop in buildSequence. Set true to force a flat,
+	// single-band panorama for purely horizontal pans.
+	FlattenVertical = false
 
 	// FeatherWidth is the width in pixels of the linear cross-fade applied
 	// at each strip seam in StitchPanorama. Neighbouring strips come from
