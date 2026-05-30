@@ -16,15 +16,13 @@ strip-mosaicing technique (Peleg et al.) implemented in Go on top of
 
 ## Example
 
-A panning clip in, a single wide panorama out:
-
 **Input** - a panning video:
 
 <p align="center">
   <img src="https://media3.giphy.com/media/v1.Y2lkPTc5MGI3NjExMWV1cW0yMTZ6bGJxaHNwNHE4bWR5MW9sMTFrNmp3ODBlMnBvYnFxaCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/wDRCa9PrISLu4qluLH/giphy.gif" alt="input panning video" width="640">
 </p>
 
-**Output** - the panoramic mosaic:
+**Output** - the mosaic panoramas video:
 
 <p align="center">
   <img src="https://media3.giphy.com/media/v1.Y2lkPTc5MGI3NjExcms3NGgwOXh2NWV3OTJmc2Nubjk0eTZ1bWZiM3UzcHE5OGo2dnIyeCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/CPBBmaFvuIvQ3l4a4e/giphy.gif" alt="output panoramic mosaic" width="100%">
@@ -34,8 +32,8 @@ A panning clip in, a single wide panorama out:
 
 1. **Extract frames** - decode the video, trim black borders, and detect the
    dominant pan direction so motion runs horizontally.
-2. **Align adjacent frames** - track Shi-Tomasi corners across each consecutive
-   pair with Lucas-Kanade optical flow, then fit a RANSAC partial-affine
+2. **Align adjacent frames** - track [Shi Tomasi corners]([url](https://en.wikipedia.org/wiki/Corner_detection#The_Harris_&_Stephens_/_Shi%E2%80%93Tomasi_corner_detection_algorithms)) across each consecutive
+   pair with [Lucas-Kanade]([url](https://en.wikipedia.org/wiki/Lucas%E2%80%93Kanade_method)) optical flow, then fit a [RANSAC]([url](https://en.wikipedia.org/wiki/Random_sample_consensus)) partial-affine
    transform reduced to horizontal translation, accumulated against a central
    reference frame.
 3. **Warp** - project every aligned frame onto a shared canvas in parallel.
